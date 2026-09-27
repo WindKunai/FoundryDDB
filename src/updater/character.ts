@@ -134,7 +134,7 @@ async function updateCharacterCall(
   const parsingApi = dynamicSync
     ? DDBProxy.getDynamicProxy()
     : DDBProxy.getProxy();
-  const useCharacterKey = foundry.utils.getProperty(actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? false;
+  const useCharacterKey = foundry.utils.getProperty(actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? true;
   const betaKey = PatreonHelper.getPatreonKey(useCharacterKey);
   const campaignId = DDBCampaigns.getCampaignId();
   const proxyCampaignId = campaignId === "" ? null : campaignId;
@@ -1520,7 +1520,7 @@ export async function updateDDBCharacter(actor: TSyncCharacterActor): Promise<(I
     return await DDBRunContext.runWith({
       ignoreEnrichedImages: true,
       keyPostfix: actor.id,
-      useLocal: foundry.utils.getProperty(actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? false,
+      useLocal: foundry.utils.getProperty(actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? true,
     }, () => _updateDDBCharacter(actor));
   } catch (err) {
     logger.error("Unable to update DDB character:", err);

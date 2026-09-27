@@ -551,7 +551,7 @@ export async function generateCharacterExtras(_html: any, ddbCharacter: DDBChara
 
     logger.debug("Extracted creatures", foundry.utils.duplicate(extractedCreatures));
     const keyPostfix = actor.id;
-    const useLocalKey = foundry.utils.getProperty(actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? false;
+    const useLocalKey = foundry.utils.getProperty(actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? true;
 
     const monsterFactory = new DDBMonsterFactory({
       // this is fine for now

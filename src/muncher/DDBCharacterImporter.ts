@@ -1238,7 +1238,7 @@ ${itemDescription.chat}
       };
       const runResult = await DDBRunContext.runWith({
         keyPostfix: this.actor.id,
-        useLocal: foundry.utils.getProperty(this.actor, "flags.ddbimporter.useLocalPatreonKey") as boolean | undefined ?? false,
+        useLocal: foundry.utils.getProperty(this.actor, "flags.ddbimporter.useLocalPatreonKey") as boolean | undefined ?? true,
       }, async () => {
         this.ddbCharacter = new DDBCharacter(ddbCharacterOptions);
         await this.ddbCharacter.getCharacterData(getOptions);

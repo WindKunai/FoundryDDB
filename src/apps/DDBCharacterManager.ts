@@ -251,7 +251,7 @@ export default class DDBCharacterManager extends DDBAppV2 {
 
     // loads settings for actor
     this.importSettings = MuncherSettings.getCharacterImportSettings();
-    const useLocalPatreonKey = (this.actor.flags as IActorFlagConfig)?.ddbimporter?.useLocalPatreonKey;
+    const useLocalPatreonKey = (this.actor.flags as IActorFlagConfig)?.ddbimporter?.useLocalPatreonKey ?? true;
 
     const characterId = (this.actor.flags as IActorFlagConfig)?.ddbimporter?.dndbeyond?.characterId;
     this.dmSyncEnabled = Boolean(characterId && this.importSettings.tiers.all);
@@ -528,7 +528,7 @@ export default class DDBCharacterManager extends DDBAppV2 {
       };
       await DDBRunContext.runWith({
         keyPostfix: this.actor.id,
-        useLocal: foundry.utils.getProperty(this.actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? false,
+        useLocal: foundry.utils.getProperty(this.actor, "flags.ddbimporter.useLocalPatreonKey") as boolean ?? true,
       }, async () => {
         const ddbCharacter = new DDBCharacter(ddbCharacterOptions);
         this.ddbCharacter = ddbCharacter;
