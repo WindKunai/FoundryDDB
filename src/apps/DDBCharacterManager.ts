@@ -28,7 +28,7 @@ export default class DDBCharacterManager extends DDBAppV2 {
   // assigned in _prepareContext before any render-driven read
   importSettings!: ICharacterImportSettings;
   dmSyncEnabled = false;
-  playerSyncEnabled = true;
+  playerSyncEnabled = false;
   result: Record<string, unknown>;
   settings: Record<string, unknown>;
   itemsMunched = false;
@@ -258,7 +258,9 @@ export default class DDBCharacterManager extends DDBAppV2 {
     this.playerSyncEnabled = Boolean(characterId && useLocalPatreonKey);
     const syncEnabled = characterId && (this.importSettings.tiers.all || useLocalPatreonKey);
 
-    const localPatreonValid = true;
+    const localPatreonValid = useLocalPatreonKey
+    ? (await PatreonHelper.isValidKey(true, false))
+    : true;
 
     const trustedUsersOnly = utils.getSetting<boolean>("restrict-to-trusted");
     const allowAllSync = utils.getSetting<boolean>("allow-all-sync");
@@ -283,7 +285,7 @@ export default class DDBCharacterManager extends DDBAppV2 {
       actor: this.actor,
       localCobalt: localCobalt,
       cobaltSet: cobaltSet,
-      syncEnabled: syncEnabled && this.itemsMunched,
+      syncEnabled: false,
       importAllowed: !syncOnly,
       itemsMunched: this.itemsMunched,
       dynamicSync,
@@ -294,7 +296,7 @@ export default class DDBCharacterManager extends DDBAppV2 {
       resourceSelection,
       useLocalPatreonKey,
       useLocalPatreonKeyAndItemsMunched: useLocalPatreonKey && this.itemsMunched,
-      localPatreonValid,
+      localPatreonValid: true,
     };
 
     let context = foundry.utils.mergeObject(this.importSettings, this.actorSettings);
