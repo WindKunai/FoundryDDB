@@ -1,0 +1,99 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+/**
+ * Oozekin. A choice feature with Cube, Puddle and Humanoid options; the parsed
+ * documents are renamed per option but keep "Reshapeable" as their original
+ * name, so one enricher covers all three.
+ */
+export default class Reshapeable extends DDBEnricherData {
+
+  static HOUR = 3600;
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Reshape",
+      activationType: "action",
+      targetType: "self",
+      rangeSelf: true,
+      addItemConsume: true,
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Cube Form Engulf",
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateSave: true,
+          generateTarget: true,
+          generateRange: true,
+          generateActivation: true,
+          generateEffects: true,
+          saveOverride: {
+            ability: ["dex"],
+            dc: {
+              calculation: "str",
+              formula: "",
+            },
+          },
+          activationOverride: {
+            type: "action",
+            value: 1,
+            condition: "",
+          },
+        },
+        overrides: {
+          noConsumeTargets: true,
+          targetType: "creature",
+          targetCount: 1,
+          data: {
+            target: {
+              affects: {
+                special: "equal or smaller size",
+              },
+            },
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Cube Form",
+        activityMatch: "Reshape",
+        options: {
+          durationSeconds: Reshapeable.HOUR,
+        },
+        changes: [
+          DDBEnricherData.ChangeHelper.movementMultiplierChange(".5", 10),
+        ],
+      },
+      {
+        name: "Puddle Form",
+        activityMatch: "Reshape",
+        options: {
+          durationSeconds: Reshapeable.HOUR,
+        },
+        changes: [
+          DDBEnricherData.ChangeHelper.movementMultiplierChange(".5", 10),
+          DDBEnricherData.ChangeHelper.overrideChange("@attributes.movement.speeds.walk", 50, "system.attributes.movement.speeds.climb"),
+        ],
+      },
+      {
+        name: "Engulfed",
+        activityMatch: "Cube Form Engulf",
+        statuses: ["Grappled", "Restrained"],
+      },
+    ];
+  }
+
+}

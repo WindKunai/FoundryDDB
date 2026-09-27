@@ -1,0 +1,65 @@
+export const WEAPONS = {
+  weaponRange: [
+    { attackType: 1, value: "M" },
+    { attackType: 2, value: "R" },
+    { attackType: null, value: "R" },
+  ],
+  weaponType: [
+    { categoryId: 1, value: "simple" },
+    { categoryId: 2, value: "martial" },
+    { categoryId: 3, value: "martial" }, // this is not 100% correct. a martialF for "Martial Firearms" would be better
+    { categoryId: 0, value: "simple" }, // this is totally incorrect, this is of type ammunition
+  ],
+  properties: [
+    { name: "Adamantine", value: "ada" },
+    { name: "Ammunition (Firearms)", value: "amm" },
+    { name: "Ammunition", value: "amm" },
+    { name: "Finesse", value: "fin" },
+    { name: "Firearm", value: "fir" },
+    { name: "Focus", value: "foc" },
+    { name: "Heavy", value: "hvy" },
+    { name: "Light", value: "lgt" },
+    { name: "Loading", value: "lod" },
+    { name: "Magical", value: "mgc" },
+    { name: "Reach", value: "rch" },
+    { name: "Reload", value: "rel" },
+    { name: "Returning", value: "ret" },
+    { name: "Silvered", value: "sil" },
+    { name: "Special", value: "spc" },
+    { name: "Thrown", value: "thr" },
+    { name: "Two-Handed", value: "two" },
+    { name: "Versatile", value: "ver" },
+    // { name: "Range", value: "fir" },
+    // full-word values below match the ids DDBRuleJournalFactory.registerRules
+    // registers into CONFIG.DND5E.itemProperties from the rule journals
+    // (page name lowercased with spaces/hyphens removed). `injected` marks
+    // them as only emitted onto items once that runtime injection has actually
+    // happened (see DDBItem #generateWeaponProperties)-- otherwise dnd5e's
+    // validProperties filtering drops them or they render unlabeled.
+    { name: "Burst Fire", value: "burstfire", injected: true },
+    { name: "Explosive", value: "explosive", injected: true },
+    { name: "Misfire", value: "misfire", injected: true },
+    { name: "Recoil", value: "recoil", injected: true },
+    { name: "Scatter", value: "scatter", injected: true },
+    { name: "Sighted", value: "sighted", injected: true },
+  ],
+  // Fallback used when a weapon or ammunition item has no row in
+  // DICTIONARY.actor.proficiencies -- 177 of DDB's 229 weapon types don't, and
+  // third party sources keep adding more. Values are dnd5e ammunition subtypes
+  // (CONFIG.DND5E.consumableTypes.ammo.subtypes).
+  //
+  // ORDER IS LOAD BEARING, first match wins: crossbow must precede bow, and
+  // sling must precede the firearm patterns, or "Slingshot" and "Sling Bullets"
+  // fall through to firearmBullet.
+  ammunitionTypes: [
+    { pattern: /laser|antimatter|blaster|plasma|energy cell|power cell/i, value: "energyCell" },
+    { pattern: /blowgun|needler|needle/i, value: "blowgunNeedle" },
+    { pattern: /crossbow|bolt/i, value: "crossbowBolt" },
+    { pattern: /sling|hoopak/i, value: "slingBullet" },
+    { pattern: /bow|arrow/i, value: "arrow" },
+    {
+      pattern: /gun|pistol|rifle|musket|revolver|shotgun|blunderbuss|magnum|flintlock|cannon|carbine|derringer|mortar|blackpowder|firearm|pepperbox|bad news|bullet|cartridge|shell|slug|buckshot/i,
+      value: "firearmBullet",
+    },
+  ],
+};

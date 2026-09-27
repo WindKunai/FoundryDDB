@@ -1,0 +1,138 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class HolyNimbus extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+      data: {
+        name: "Use/Apply Light",
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Place Aura",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateActivation: true,
+          generateTarget: true,
+          generateConsumption: false,
+          activationOverride: {
+            type: "special",
+            condition: "While the aura is active",
+          },
+          targetOverride: {
+            override: true,
+            affects: {
+              type: "enemy",
+            },
+            template: {
+              contiguous: false,
+              type: "radius",
+              size: "@scale.paladin.aura-of-protection",
+              units: "ft",
+            },
+          },
+        },
+        overrides: {
+          data: {
+            behaviors: [
+              DDBEnricherData.BehaviorHelper.activity({
+                events: ["tokenTurnStart"],
+                activityName: "Aura Damage",
+              }),
+            ],
+          },
+        },
+      },
+      {
+        init: {
+          name: "Aura Damage",
+          type: DDBEnricherData.ACTIVITY_TYPES.DAMAGE,
+        },
+        build: {
+          noeffect: true,
+          generateConsumption: false,
+          generateTarget: true,
+          generateRange: false,
+          generateActivation: true,
+          generateDamage: true,
+          activationOverride: {
+            type: "special",
+            value: 1,
+            condition: "",
+          },
+          targetOverride: {
+            affects: { type: "enemy" },
+          },
+          damageParts: [DDBEnricherData.basicDamagePart({ customFormula: "@abilities.mod.cha + @prof", types: ["radiant"] })],
+        },
+      },
+      {
+        init: {
+          name: "Spend Spell Slot to Restore Use",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateConsumption: true,
+          generateTarget: true,
+          generateActivation: true,
+          generateUtility: true,
+          activationOverride: {
+            type: "none",
+            value: null,
+            condition: "",
+          },
+          consumptionOverride: {
+            targets: [
+              {
+                type: "itemUses",
+                target: "",
+                value: -1,
+                scaling: { mode: "", formula: "" },
+              },
+              {
+                type: "spellSlots",
+                value: "1",
+                target: "5",
+                scaling: { allowed: false, max: "" },
+              },
+            ],
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    const effects = [
+      {
+        activityMatch: "Use/Apply Light",
+        changes: [
+          DDBEnricherData.ChangeHelper.upgradeChange("@scale.paladin.aura-of-protection", 20, "token.light.bright"),
+          DDBEnricherData.ChangeHelper.overrideChange("#ffffff", 20, "token.light.color"),
+          DDBEnricherData.ChangeHelper.overrideChange("0.25", 20, "token.light.alpha"),
+        ],
+      },
+    ];
+
+    return effects;
+  }
+
+  override get override(): IDDBOverrideData {
+    const uses = this._getUsesWithSpent({ type: "class", name: "Imbue Aura of Protection", max: "1", period: "lr" });
+    return {
+      uses,
+    };
+  }
+
+}

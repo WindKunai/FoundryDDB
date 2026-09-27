@@ -1,0 +1,45 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class EldritchCannonForceBallista extends DDBEnricherData {
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.ATTACK;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      noTemplate: true,
+      targetType: "creature",
+      data: {
+        description: {
+          chatFlavor: "On hit pushed 5 ft away.",
+        },
+        range: {
+          value: 120,
+          units: "ft",
+        },
+        target: {},
+        attack: {
+          ability: "int",
+          type: {
+            value: "ranged",
+            classification: "spell",
+          },
+        },
+        damage: {
+          parts: [
+            DDBEnricherData.basicDamagePart({
+              customFormula: "@scale.artillerist.eldritch-cannon",
+              type: "force",
+            }),
+          ],
+        },
+      },
+    };
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      uses: { spent: null, max: "" },
+    };
+  }
+}

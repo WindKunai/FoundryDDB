@@ -1,0 +1,22 @@
+// import { utils } from "../../../../lib/_module";
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class OrderlyWard extends DDBEnricherData {
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.HEAL;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      data: {
+        healing: DDBEnricherData.basicDamagePart({
+          number: 1,
+          denomination: 6,
+          bonus: "@flags.dnd5e.summon.mod",
+        }),
+      },
+    };
+  }
+
+
+}

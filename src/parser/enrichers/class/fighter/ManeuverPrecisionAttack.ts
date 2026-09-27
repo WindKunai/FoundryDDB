@@ -1,0 +1,47 @@
+import { DDBEnricherData } from "../../data/_module";
+import Maneuver from "./Maneuver";
+
+export default class ManeuverPrecisionAttack extends Maneuver {
+
+  override get type(): IDDBActivityType {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Precision Attack",
+      activationType: "reaction",
+      targetType: "self",
+      addItemConsume: true,
+      // data: {
+      //   roll: {
+      //     prompt: false,
+      //     visible: false,
+      //     formula: this.diceString,
+      //     name: "Add to Attack Roll",
+      //   },
+      // },
+    };
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Precision Attack Bonus",
+        daeSpecialDurations: ["1Attack"],
+        data: {
+          duration: {
+            value: 6,
+            expiry: "turnStart",
+            expired: null,
+          },
+        },
+        changes: [
+          DDBEnricherData.ChangeHelper.unsignedAddChange(this.diceString, 20, "system.rolls.attack.mwak.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange(this.diceString, 20, "system.rolls.attack.rwak.bonus"),
+        ],
+      },
+    ];
+  }
+
+}

@@ -1,0 +1,23 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class BlazingRevival extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.HEAL;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Healing",
+      activationType: "special",
+      data: {
+        healing: DDBEnricherData.basicDamagePart({
+          customFormula: "floor(@attributes.hp.max / 2)",
+          types: ["healing"],
+        }),
+      },
+    };
+  }
+
+}
+

@@ -1,0 +1,108 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class HuntersPrey extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Choice",
+      addItemConsume: true,
+      targetType: "self",
+      activationType: "special",
+      activationCondition: "Finish a short or long rest",
+      data: {
+        sort: 2,
+      },
+    };
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Colossus Slayer",
+        activityMatch: "Choice",
+        data: {
+          img: "icons/creatures/magical/construct-iron-stomping-yellow.webp",
+        },
+        ac5eChanges: [
+          DDBEnricherData.ChangeHelper.ac5eChange(
+            "bonus=1d8; oncePerTurn; optin; (actionType.mwak || actionType.rwak) && opponentActor.attributes.hp.value < opponentActor.attributes.hp.max",
+            20,
+            "flags.automated-conditions-5e.damage.bonus",
+          ),
+        ],
+      },
+      {
+        name: "Horde Breaker",
+        activityMatch: "Choice",
+        data: {
+          img: "icons/creatures/invertebrates/wasp-swarm-movement.webp",
+        },
+      },
+    ];
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      uses: {
+        spent: null,
+        max: "1",
+        recovery: [
+          { period: "sr", type: "recoverAll", formula: undefined },
+        ],
+      },
+      retainOriginalConsumption: true,
+      retainUseSpent: true,
+      descriptionSuffix: `
+<section class="secret ddbSecret" id="secret-ddbHuntersPrey">
+<p><strong>Implementation Details</strong></p>
+<p>You can use the effects on the Choice action to track your choice. The damage activity is provided for Colossus Slayer.</p>
+</section>`,
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Colossus Slayer: Damage",
+          type: DDBEnricherData.ACTIVITY_TYPES.DAMAGE,
+        },
+        build: {
+          generateDamage: true,
+          generateTarget: true,
+        },
+        overrides: {
+          targetType: "creature",
+          activationType: "special",
+          activationCondition: "Once per turn, if target is missing hit points",
+          addActivityConsume: true,
+          data: {
+            sort: 1,
+            range: {
+              value: null,
+              units: "spec",
+            },
+            uses: {
+              "spent": 0,
+              "recovery": [
+                {
+                  "period": "turn",
+                  "type": "recoverAll",
+                },
+              ],
+              "max": "1",
+            },
+            damage: {
+              parts: [DDBEnricherData.basicDamagePart({ number: 1, denomination: 8, types: DDBEnricherData.allDamageTypes() })],
+            },
+          },
+        },
+      },
+    ];
+  }
+
+}

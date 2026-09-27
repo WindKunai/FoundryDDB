@@ -1,0 +1,32 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class ChannelDivinityRadianceOfTheDawn extends DDBEnricherData {
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.SAVE;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      targetType: "enemy",
+      data: {
+        save: { ability: ["con"], dc: { calculation: "spellcasting", formula: "" } },
+        damage: {
+          onSave: "half",
+          parts: [
+            DDBEnricherData.basicDamagePart({
+              customFormula: "2d10 + @classes.cleric.levels",
+              type: "radiant",
+            }),
+          ],
+        },
+        target: {
+          template: {
+            size: "30",
+            units: "ft",
+            type: "radius",
+          },
+        },
+      },
+    };
+  }
+}

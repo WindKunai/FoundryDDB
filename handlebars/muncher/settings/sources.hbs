@@ -1,0 +1,81 @@
+<section id="ddb-importer-muncher-sources" class="tab ddb-muncher {{ tab.cssClass }} {{#if tab.active}} active{{/if}}" data-tab="{{ tab.id }}" data-group="{{ tab.group }}">
+
+    <fieldset>
+    <legend>Included Flavour Profiles (Categories)</legend>
+    <p>By default DDB Importer <strong>excludes</strong> third party categories from being imported.</p>
+    <p>The following categories will be included. Please adjust to taste.</p>
+    <p>Categories are used on D&D Beyond to filter content.
+These are groups of books.
+The 2024 PHB, MM and DMG are considered "5.5e Core Rules". 2014 Books are 5e.
+Expanded content are books like XGtE.
+Legacy/non-core are books that were replaced in the 2014 ruleset lifecycle like Mordenkainen’s Tome of Foes.</p>
+    <div class="form-fields" id="munch-included-config">
+      <multi-select id="muncher-included-source-categories" name="muncher-included-source-categories" class="ddb-source-select">
+        {{#each includedCategories}}
+        <option value="{{this.id}}" data-tooltip="{{this.description}}" {{this.selected}}> {{this.label}}</option>
+        {{/each}}
+      </multi-select>
+    </div>
+    </fieldset>
+
+    <fieldset class="ddb-included-source-summary">
+      <legend>Currently Included Categories and Books</legend>
+      <div class="ddb-included-source-toolbar">
+        <p class="hint">Every released book in the selected categories is included.</p>
+        <div class="ddb-included-source-actions">
+          <button type="button" data-action="toggleSourceBookView">
+            {{#if showSourceBookCovers}}
+              <i class="fas fa-list"></i> Show names
+            {{else}}
+              <i class="fas fa-images"></i> Show covers
+            {{/if}}
+          </button>
+          <button type="button" data-action="openSourceBookBrowser">
+            <i class="fas fa-book-open"></i> What book is in what category?
+          </button>
+        </div>
+      </div>
+
+      {{#if includedCategoryBooks.length}}
+        <div class="ddb-included-source-grid {{#if showSourceBookCovers}}show-covers{{else}}show-names{{/if}}">
+          {{#each includedCategoryBooks}}
+            <section class="ddb-included-source-category">
+              <header class="ddb-included-source-category-header">
+                <h4>{{this.name}}</h4>
+                <span>{{this.books.length}}</span>
+              </header>
+              <div class="ddb-included-source-books">
+                {{#unless this.books.length}}
+                  <p class="ddb-included-source-empty">No released books in this category yet.</p>
+                {{else if @root.showSourceBookCovers}}
+                  <ul class="ddb-included-source-cover-list">
+                    {{#each this.books}}
+                      <li class="ddb-included-source-cover-card" title="{{this.name}} ({{this.code}})">
+                        <div class="ddb-included-source-cover">
+                          {{#if this.avatarURL}}
+                            <img src="{{this.avatarURL}}" alt="Cover of {{this.name}}" loading="lazy" />
+                          {{else}}
+                            <i class="fas fa-book"></i>
+                          {{/if}}
+                        </div>
+                        <span>{{this.name}}</span>
+                      </li>
+                    {{/each}}
+                  </ul>
+                {{else}}
+                  <ul class="ddb-included-source-name-list">
+                    {{#each this.books}}
+                      <li title="{{this.code}}">{{this.name}}</li>
+                    {{/each}}
+                  </ul>
+                {{/unless}}
+              </div>
+            </section>
+          {{/each}}
+        </div>
+      {{else}}
+        <p class="ddb-included-source-empty">No source categories are currently included.</p>
+      {{/if}}
+    </fieldset>
+
+</section>

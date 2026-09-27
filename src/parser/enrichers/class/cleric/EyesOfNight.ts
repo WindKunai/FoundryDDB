@@ -1,0 +1,87 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class EyesOfNight extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return this.isAction ? DDBEnricherData.ACTIVITY_TYPES.NONE : DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Activate",
+      id: "activateEyesOfNi",
+      addItemConsume: true,
+      targetType: "creature",
+      targetCount: "max(1, @abilities.wis.mod)",
+      targetChoice: true,
+      rangeSelf: true,
+      data: {
+        target: {
+          template: {
+            size: "10",
+            units: "ft",
+            type: "radius",
+          },
+        },
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Activate With Spell Slot",
+          type: DDBEnricherData.ACTIVITY_TYPES.FORWARD,
+        },
+        build: {
+        },
+        overrides: {
+          activationType: "action",
+          data: {
+            activity: {
+              id: "activateEyesOfNi",
+            },
+            consumption: {
+              targets: [
+                {
+                  type: "spellSlots",
+                  value: "1",
+                  target: "1",
+                  scaling: {},
+                },
+              ],
+              scaling: {
+                allowed: true,
+                max: "",
+              },
+              spellSlot: true,
+            },
+            uses: { spent: null, max: "" },
+            midiProperties: {
+              confirmTargets: "default",
+            },
+          },
+        },
+      },
+    ];
+
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Eyes of Night - Darkvision",
+        activityMatch: "Activate",
+        img: "icons/magic/perception/silhouette-stealth-shadow.webp",
+        changes: [
+          DDBEnricherData.ChangeHelper.upgradeChange("300", 20, "system.attributes.senses.ranges.darkvision"),
+        ],
+        options: {
+          durationSeconds: 3600,
+          transfer: false,
+        },
+      },
+    ];
+  }
+}

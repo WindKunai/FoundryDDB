@@ -1,0 +1,85 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class TashasOtherworldlyGuise extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Cast",
+    };
+  }
+
+  override get clearAutoEffects(): boolean {
+    return true;
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    const sharedChanges = [
+      DDBEnricherData.ChangeHelper.upgradeChange("40", 20, "system.attributes.movement.speeds.fly"),
+      DDBEnricherData.ChangeHelper.signedAddChange("2", 20, "system.attributes.ac.bonus"),
+    ];
+    const upperPlanesChanges = [
+      DDBEnricherData.ChangeHelper.damageImmunityChange("radiant"),
+      DDBEnricherData.ChangeHelper.damageImmunityChange("necrotic"),
+      DDBEnricherData.ChangeHelper.conditionImmunityChange("charmed"),
+    ].concat(sharedChanges);
+    const lowerPlanesChanges = [
+      DDBEnricherData.ChangeHelper.damageImmunityChange("fire"),
+      DDBEnricherData.ChangeHelper.damageImmunityChange("poison"),
+      DDBEnricherData.ChangeHelper.conditionImmunityChange("poisoned"),
+    ].concat(sharedChanges);
+    const effects = [
+      {
+        name: "Upper Planes",
+        changes: upperPlanesChanges,
+        activityMatch: "Cast",
+      },
+      {
+        name: "Lower Planes",
+        changes: lowerPlanesChanges,
+        activityMatch: "Cast",
+      },
+      {
+        name: "Otherworldly Weapon",
+        type: "enchant",
+        changes: [
+          DDBEnricherData.ChangeHelper.overrideChange(`{} [Otherworldly Weapon]`, 20, "name"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange("mgc", 20, "system.properties"),
+          // the legacy "system.ability" key cannot carry "spellcasting" in dnd5e 6, see AlterSelf
+          DDBEnricherData.ChangeHelper.overrideChange("spellcasting", 20, "activities[attack].attack.ability"),
+        ],
+        activityMatch: "Otherworldly Weapon",
+      },
+    ];
+    return effects;
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Otherworldly Weapon",
+          type: DDBEnricherData.ACTIVITY_TYPES.ENCHANT,
+        },
+        build: {
+          img: "icons/magic/holy/angel-wings-gray.webp",
+          generateDamage: false,
+          generateHealing: false,
+          generateRange: false,
+          generateConsumption: false,
+          noSpellslot: true,
+          data: {
+            restrictions: {
+              type: "weapon",
+              allowMagical: true,
+            },
+          },
+        },
+      },
+    ];
+  }
+
+}

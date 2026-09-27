@@ -1,0 +1,55 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class OrdersWrath extends DDBEnricherData {
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.DAMAGE;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      targetType: "creature",
+      noeffect: true,
+      activationType: "special",
+      data: {
+        sort: 2,
+        damage: {
+          parts: [
+            DDBEnricherData.basicDamagePart({
+              customFormula: "@scale.order.divine-strike",
+              types: ["psychic"],
+            }),
+          ],
+        },
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Curse",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+        },
+        overrides: {
+          targetType: "creature",
+          activationType: "special",
+          data: {
+            sort: 1,
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Cursed by Order's Wrath",
+        statuses: ["Cursed"],
+      },
+    ];
+  }
+}

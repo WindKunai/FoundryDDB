@@ -1,0 +1,40 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class ChannelDivinityWatchersWill extends DDBEnricherData {
+
+  /**
+   * @returns {DDBActivityData}
+   */
+  override get activity(): IDDBActivityData {
+    return {
+      type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+      name: "Activate Watcher's Will",
+      targetType: "ally",
+      addItemConsume: true,
+      data: {
+        duration: {
+          units: "minute",
+          value: "1",
+        },
+      },
+    };
+  }
+
+  /**
+   * @returns {DDBEffectHint[]}
+   */
+  override get effects(): IDDBEffectHint[] {
+    return [{
+      name: "Watcher's Will",
+      options: {
+        durationSeconds: 60,
+      },
+      changes: [
+        DDBEnricherData.ChangeHelper.advantageAbilitySaveChange("int"),
+        DDBEnricherData.ChangeHelper.advantageAbilitySaveChange("wis"),
+        DDBEnricherData.ChangeHelper.advantageAbilitySaveChange("cha"),
+      ],
+    }];
+  }
+
+}

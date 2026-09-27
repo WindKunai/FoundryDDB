@@ -1,0 +1,40 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class NimbusOfPathos extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      targetType: "creature",
+      activationType: "action",
+      activationCondition: "Touch a willing creature",
+      rangeType: "touch",
+    };
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Nimbus of Pathos",
+        options: {
+          durationSeconds: 60,
+          description: "+4 AC, advantage on attack rolls and saving throws, +1d10 radiant on weapon and spell attack hits, critical hits on 18-20. When the effect ends the creature drops to 0 hit points and is dying.",
+        },
+        changes: [
+          DDBEnricherData.ChangeHelper.unsignedAddChange("4", 20, "system.attributes.ac.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange("1d10[radiant]", 20, "system.rolls.damage.mwak.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange("1d10[radiant]", 20, "system.rolls.damage.rwak.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange("1d10[radiant]", 20, "system.rolls.damage.msak.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange("1d10[radiant]", 20, "system.rolls.damage.rsak.bonus"),
+          DDBEnricherData.ChangeHelper.overrideChange("18", 20, "flags.dnd5e.weaponCriticalThreshold"),
+          DDBEnricherData.ChangeHelper.ruleAdvantageChange("attack"),
+          DDBEnricherData.ChangeHelper.ruleAdvantageChange("save"),
+        ],
+      },
+    ];
+  }
+
+}

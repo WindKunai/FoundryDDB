@@ -1,0 +1,93 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class DeathArmor extends DDBEnricherData {
+
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Save vs Damage",
+      removeSpellSlotConsume: true,
+      noConsumeTargets: true,
+      data: {
+        sort: 2,
+      },
+    };
+  }
+
+  override get addAutoAdditionalActivities(): boolean {
+    return false;
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Cast",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateAttack: false,
+          onsave: false,
+          noeffect: true,
+          generateTarget: true,
+          targetOverride: {
+            override: true,
+            affects: {
+              type: "enemy",
+            },
+            template: {
+              contiguous: false,
+              type: "radius",
+              size: "5",
+              units: "ft",
+            },
+          },
+        },
+        overrides: {
+          activationType: "special",
+          data: {
+            behaviors: [
+              DDBEnricherData.BehaviorHelper.applyEffect({
+                effects: "Inky Aura (Death Armor)",
+                auraeffectsNever: true,
+              }),
+            ],
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Inky Aura (Death Armor)",
+        standalone: true,
+        auraeffectsNever: true,
+        options: {
+          description: "Within 5 feet of the armored caster's inky aura: melee hits against the caster trigger the Save vs Damage activity.",
+        },
+      },
+      {
+        name: "Inky Aura (Death Armor)",
+        options: {},
+        activityMatch: "Cast",
+        auraeffectsOnly: true,
+        auraeffects: {
+          applyToSelf: false,
+          bestFormula: "",
+          canStack: false,
+          collisionTypes: ["move"],
+          combatOnly: false,
+          disableOnHidden: true,
+          distanceFormula: "5",
+          disposition: -1,
+          evaluatePreApply: true,
+          overrideName: "",
+          script: "",
+        },
+      },
+    ];
+  }
+
+}

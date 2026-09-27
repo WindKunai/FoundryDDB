@@ -1,0 +1,109 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class WallOfFire extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.SAVE;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Place Wall",
+      splitDamage: true,
+      data: {
+        // the 10 ft zone beside the chosen side is larger than the wall region; the GM
+        // handles that band manually, the region covers entering or ending a turn in the wall
+        behaviors: [
+          DDBEnricherData.BehaviorHelper.activity({
+            events: ["tokenEnter", "tokenTurnEnd"],
+            activityName: "Damage",
+          }),
+        ],
+        img: "icons/magic/fire/flame-burning-fence.webp",
+        target: {
+          override: true,
+          template: {
+            type: "wall",
+            size: "60",
+            width: "1",
+            height: "20",
+            units: "ft",
+          },
+        },
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Place Ring",
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateDamage: true,
+          generateConsumption: true,
+          generateSave: true,
+          generateTarget: true,
+          img: "icons/magic/fire/barrier-wall-flame-ring-yellow.webp",
+          partialDamageParts: [0],
+          targetOverride: {
+            override: true,
+            template: {
+              count: "1",
+              contiguous: false,
+              // "a ringed wall up to 20 feet in diameter, 20 feet high, and 1 foot thick"
+              type: "ring",
+              size: "10",
+              width: "1",
+              height: "20",
+              units: "ft",
+            },
+            affects: {},
+          },
+        },
+        overrides: {
+          data: {
+            behaviors: [
+              DDBEnricherData.BehaviorHelper.activity({
+                events: ["tokenEnter", "tokenTurnEnd"],
+                activityName: "Damage",
+              }),
+            ],
+          },
+        },
+      },
+      {
+        init: {
+          name: "Damage",
+          type: DDBEnricherData.ACTIVITY_TYPES.DAMAGE,
+        },
+        build: {
+          img: "icons/magic/fire/flame-burning-skeleton-explosion.webp",
+          generateDamage: true,
+          generateConsumption: false,
+          generateTarget: true,
+          partialDamageParts: [0],
+          noSpellslot: true,
+          activationOverride: { type: "special", condition: "" },
+          durationOverride: { units: "inst", concentration: false },
+          targetOverride: {
+            override: true,
+            affects: {
+              type: "creature",
+            },
+            template: {},
+          },
+        },
+      },
+    ];
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      noTemplate: true,
+    };
+  }
+
+}

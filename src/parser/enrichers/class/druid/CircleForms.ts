@@ -1,0 +1,71 @@
+import DDBDataUtils from "../../../lib/DDBDataUtils";
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class CircleForms extends DDBEnricherData {
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.TRANSFORM;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      noTemplate: true,
+      targetType: "self",
+      activationType: "bonus",
+      addItemConsume: true,
+      itemConsumeTargetName: "Wild Shape",
+      data: {
+        duration: {
+          value: "(floor(@classes.druid.levels / 2))",
+          units: "hour",
+        },
+        img: "systems/dnd5e/icons/svg/abilities/intelligence.svg",
+        // the wildshape preset supplies the Moon druid's 13 + Wisdom minimum AC and temp HP
+        transform: {
+          customize: false,
+          identifier: "druid",
+          preset: "wildshape",
+          mode: "cr",
+        },
+        profiles: [
+          {
+            cr: `max(1/4, @subclasses.${DDBDataUtils.classIdentifierName(this.ddbParser.subKlass ?? "")}.levels / 3)`,
+            name: "Circle Form",
+            uuid: undefined,
+            sizes: [],
+            types: ["beast"],
+            movement: ["fly"],
+            level: {
+              min: 2,
+              max: 3,
+            },
+          },
+          {
+            cr: `max(1/2, @subclasses.${DDBDataUtils.classIdentifierName(this.ddbParser.subKlass ?? "")}.levels / 3)`,
+            name: "Circle Form",
+            uuid: undefined,
+            sizes: [],
+            types: ["beast"],
+            movement: ["fly"],
+            level: {
+              min: 4,
+              max: 7,
+            },
+          },
+          {
+            cr: `max(1, @subclasses.${DDBDataUtils.classIdentifierName(this.ddbParser.subKlass ?? "")}.levels / 3)`,
+            name: "Circle Form",
+            uuid: undefined,
+            sizes: [],
+            types: ["beast"],
+            movement: [],
+            level: {
+              min: 8,
+              max: null,
+            },
+          },
+        ],
+      },
+    };
+  }
+
+}

@@ -1,0 +1,192 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class ElementalSmite extends DDBEnricherData {
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Dao's Crush",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateActivation: true,
+          generateTarget: true,
+          generateUtility: true,
+        },
+        overrides: {
+          itemConsumeTargetName: "Channel Divinity",
+          addItemConsume: true,
+          activationType: "special",
+          targetType: "creature",
+          activationCondition: "You use Divine Smite",
+          noTemplate: true,
+        },
+      },
+      {
+        init: {
+          name: "Djinni's Escape",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateActivation: true,
+          generateTarget: true,
+          generateUtility: true,
+          generateRange: true,
+        },
+        overrides: {
+          itemConsumeTargetName: "Channel Divinity",
+          addItemConsume: true,
+          activationType: "special",
+          targetType: "self",
+          activationCondition: "You use Divine Smite",
+          noTemplate: true,
+          data: {
+            range: {
+              value: 30,
+              long: null,
+              units: "ft",
+            },
+          },
+        },
+      },
+      {
+        init: {
+          name: "Efreeti's Fury",
+          type: DDBEnricherData.ACTIVITY_TYPES.DAMAGE,
+        },
+        build: {
+          generateDamage: true,
+          generateTarget: true,
+          generateRange: true,
+        },
+        overrides: {
+          itemConsumeTargetName: "Channel Divinity",
+          addItemConsume: true,
+          targetType: "enemy",
+          activationType: "special",
+          activationCondition: "You use Divine Smite",
+          data: {
+            damage: {
+              parts: [
+                DDBEnricherData.basicDamagePart({
+                  number: 2,
+                  denomination: 4,
+                  type: "fire",
+                }),
+              ],
+            },
+            range: {
+              value: 30,
+              long: null,
+              units: "ft",
+            },
+          },
+        },
+      },
+      {
+        init: {
+          name: "Marid's Surge",
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateActivation: true,
+          generateTarget: true,
+          generateRange: true,
+          generateUtility: true,
+        },
+        overrides: {
+          itemConsumeTargetName: "Channel Divinity",
+          addItemConsume: true,
+          activationType: "special",
+          targetType: "creature",
+          activationCondition: "You use Divine Smite",
+          data: {
+            save: {
+              ability: ["str"],
+              dc: {
+                calculation: "spellcasting",
+                formula: "",
+              },
+            },
+          },
+        },
+      },
+      {
+        init: {
+          name: "Escape Check",
+          type: DDBEnricherData.ACTIVITY_TYPES.CHECK,
+        },
+        build: {
+          generateCheck: true,
+          generateTarget: false,
+          generateRange: false,
+          checkOverride: {
+            "associated": [
+              "ath",
+            ],
+            "ability": "str",
+            "dc": {
+              "calculation": "int",
+              "formula": "",
+            },
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Dao's Crush: Grappled",
+        statuses: ["grappled", "restrained"],
+        activityMatch: "Dao's Crush",
+        data: {
+          duration: {
+            value: null,
+            expiry: null,
+            expired: null,
+          },
+        },
+      },
+      {
+        name: "Djinni's Escape: Incorporeal Form",
+        options: {
+          expiry: "sourceEnd",
+        },
+        activityMatch: "Djinni's Escape",
+        changes: [
+          DDBEnricherData.ChangeHelper.damageResistanceChange("piercing"),
+          DDBEnricherData.ChangeHelper.damageResistanceChange("slashing"),
+          DDBEnricherData.ChangeHelper.damageResistanceChange("bludgeoning"),
+          DDBEnricherData.ChangeHelper.conditionImmunityChange("grappled"),
+          DDBEnricherData.ChangeHelper.conditionImmunityChange("restrained"),
+          DDBEnricherData.ChangeHelper.conditionImmunityChange("prone"),
+        ],
+      },
+      {
+        name: "Marid's Surge: Prone",
+        activityMatch: "Marid's Surge",
+        statuses: ["prone"],
+      },
+    ];
+  }
+
+  override get clearAutoEffects(): boolean {
+    return true;
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      data: {
+        system: {
+          type: {
+            subtype: "channelDivinity",
+          },
+        },
+      },
+    };
+  }
+
+}

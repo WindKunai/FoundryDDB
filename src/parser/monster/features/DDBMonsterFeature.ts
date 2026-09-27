@@ -1,0 +1,2142 @@
+import { utils, logger, CompendiumHelper } from "../../../lib/_module";
+import { DICTIONARY } from "../../../config/_module";
+import { DDBMonsterFeatureActivity } from "../../activities/_module";
+import { DDBMonsterFeatureEnricher, Effects } from "../../enrichers/_module";
+import { DDBTable, DDBReferenceLinker, DDBDescriptions, SystemHelpers } from "../../lib/_module";
+import { DDBMonsterDamage } from "./DDBMonsterDamage";
+import { monsterDamageAppliedStatuses } from "./MonsterDamageModes";
+import DDBMonster from "../../DDBMonster";
+import { IMonsterWeaponDictionary } from "../../../config/dictionary/actor/monsters";
+import DDBActivityFactoryMixin from "../../activities/mixins/DDBActivityFactoryMixin";
+
+
+interface IDDBMonsterFeature {
+  ddbMonster?: DDBMonster;
+  html?: string;
+  type?: TDDBMonsterActionType;
+  titleHTML?: string;
+  fullName?: string;
+  actionCopy?: boolean;
+  updateExisting?: boolean;
+  hideDescription?: boolean;
+  sort?: number | null;
+  // policy overrides; when undefined the matching game setting supplies the value
+  stripName?: boolean;
+  stripFlagData?: boolean;
+}
+
+type TDDBMonsterFeatureDocumentType = "feat" | "weapon";
+
+export default class DDBMonsterFeature extends DDBActivityFactoryMixin<TDDBMonsterFeatureDocumentType> {
+
+  declare rawCharacter: I5eMonsterData | null;
+  declare data: I5eWeaponItem | I5eFeatItem;
+
+  // every use is behind a this.templateType === "weapon" guard, which cannot
+  // narrow the union on this.data, so expose the weapon view directly
+  get weaponData(): I5eWeaponItem {
+    return this.data as I5eWeaponItem;
+  }
+
+  declare enricher: DDBMonsterFeatureEnricher;
+  declare type: TDDBMonsterActionType;
+  actionData: IDDBMonsterActionData;
+  // fields marked with ! are assigned in prepare(), which the constructor always calls
+  descriptionParse!: IFeatureBasicsResult;
+  descriptionSave!: IFeatureBasicsSave;
+  // memoised by the multiSaveSections getter; [] means "one save, do not reshape"
+  #multiSaveSectionCache?: { slice: ISectionSlice; save: IParsedSave }[];
+  name: string;
+  isAction = null;
+  legacy: boolean;
+  is2014: boolean;
+  is2024: boolean;
+  originalName!: string;
+  ddbMonster: DDBMonster;
+  html: string;
+  strippedHtml!: string;
+  levelBonus!: boolean;
+  profBonus!: boolean;
+  sort: number | null;
+  isAttack!: boolean;
+  isSummonAttack!: boolean;
+  isSave!: boolean;
+  isRecharge!: RegExpMatchArray | null;
+  fullName: string;
+  stripName: boolean;
+  hideDescription: boolean;
+  updateExisting: boolean;
+  stripFlagData: boolean;
+  titleHTML?: string;
+  actionCopy: boolean;
+  isSpellSave!: boolean;
+  isSavingThrow!: boolean;
+  isSummonSave!: boolean;
+  halfDamage!: boolean;
+  pbToAttack!: boolean;
+  weaponAttack!: boolean;
+  spellAttack!: boolean;
+  meleeAttack!: boolean;
+  rangedAttack!: boolean;
+  healingAction!: boolean;
+  toHit!: number;
+  yourSpellAttackModToHit!: boolean;
+  templateType!: "feat" | "weapon";
+  weaponLookup: IMonsterWeaponDictionary | undefined;
+  identifier!: string;
+  isCompanion!: boolean;
+  nameSplit?: string;
+  use2024Spells: boolean;
+  useCastActivity: boolean;
+  // assigned at the start of generateDamageInfo() before any read
+  ddbMonsterDamage!: DDBMonsterDamage;
+  #damageModeQueued = false;
+  // assigned by #generateSpellcastingData() before spell activity generation reads it
+  spellCastingData!: IMonsterSpellcastingData;
+
+  #generateAdjustedName() {
+    this.originalName = `${this.name}`;
+    if (!this.stripName) return;
+    const regex = /(.*)\s*\((:?costs? \d actions|Recharges after a (Short or Long|Long) Rest|(?!Spell;|Psionics;).*\d\/day|recharge \d ?- ?\d|Recharge \d)\)/i;
+    const nameMatch = this.name.replace(/[–-–−]/g, "-").match(regex);
+    if (nameMatch) {
+      this.data.name = nameMatch[1].trim();
+      this.nameSplit = nameMatch[2];
+    } else {
+      const regex2 = /(.*)\s*\((.*); (:?costs \d actions|Recharges after a (Short or Long|Long) Rest|(?!Spell;|Psionics;).*\d\/day|recharge \d-\d|Recharge \d)\)/i;
+      const nameMatch2 = this.name.replace(/[–-–−]/g, "-").match(regex2);
+      if (nameMatch2) {
+        this.data.name = `${nameMatch2[1].trim()} (${nameMatch2[2].trim()})`;
+        this.nameSplit = nameMatch2[3];
+      }
+    }
+  }
+
+  createBaseFeature() {
+    this.data = {
+      _id: foundry.utils.randomID(),
+      name: this.name,
+      type: this.templateType,
+      system: SystemHelpers.getTemplate(this.templateType),
+      effects: [],
+      flags: {
+        ddbimporter: {
+          levelBonus: false,
+          profBonus: false,
+          spellSave: false,
+          dndbeyond: {
+          },
+        },
+        monsterMunch: {
+          titleHTML: this.titleHTML ?? "",
+          fullName: this.fullName,
+          actionCopy: this.actionCopy,
+          type: this.type,
+          description: this.html,
+        },
+      },
+    };
+    // these templates not good
+    if ("requirements" in this.data.system)
+      this.data.system.requirements = "";
+    this.data.sort = this.sort ?? undefined;
+    this.levelBonus = false;
+    this.profBonus = false;
+  }
+
+  // prepare the html in this.html for a parse, runs some checks and pregen to calculate values
+  prepare() {
+    this.strippedHtml = utils.stripHtml(`${this.html}`).trim();
+
+    const descriptionParse: IFeatureBasicsResult = DDBDescriptions.featureBasics({ text: this.strippedHtml });
+    this.descriptionParse = descriptionParse;
+
+    // set calc flags
+    this.isAttack = descriptionParse.properties.isAttack;
+    this.isSummonAttack = descriptionParse.properties.isSummonAttack;
+    this.isSpellSave = descriptionParse.properties.isSpellSave;
+    this.isSavingThrow = descriptionParse.properties.isSavingThrow;
+    this.isSummonSave = descriptionParse.properties.isSummonSave;
+    this.isSave = descriptionParse.properties.isSave;
+    this.halfDamage = descriptionParse.properties.halfDamage;
+    this.pbToAttack = descriptionParse.properties.pbToAttack;
+    this.weaponAttack = descriptionParse.properties.weaponAttack;
+    // warning - unclear how to parse these out for 2024 monsters
+    // https://comicbook.com/gaming/news/dungeons-dragons-first-look-2025-monster-manual/
+    this.spellAttack = descriptionParse.properties.spellAttack;
+    this.meleeAttack = descriptionParse.properties.meleeAttack;
+    this.rangedAttack = descriptionParse.properties.rangedAttack;
+    this.healingAction = descriptionParse.properties.healingAction;
+    this.toHit = descriptionParse.properties.toHit;
+    this.yourSpellAttackModToHit = descriptionParse.properties.yourSpellAttackModToHit;
+    this.descriptionSave = descriptionParse.save;
+
+    this.isRecharge = this.#matchRecharge();
+    this.templateType = this.isAttack && this.isRecharge === null ? "weapon" : "feat";
+    this.weaponLookup = DICTIONARY.monsters.weapons.find((weapon) => this.name.startsWith(weapon.name));
+
+    if (this.name === "Legendary Actions" || !this.weaponLookup) {
+      this.templateType = "feat";
+    } else if (this.weaponLookup) {
+      this.templateType = "weapon";
+    }
+
+    if (!this.data) this.createBaseFeature();
+    this.#generateAdjustedName();
+
+    foundry.utils.setProperty(this.data, "flags.midiProperties", descriptionParse.midiProperties);
+
+    this.identifier = utils.referenceNameString(this.data.name.toLowerCase());
+    this.data.system.identifier = this.identifier;
+
+    // if not attack set to a monster type action
+    if (this.templateType !== "weapon") foundry.utils.setProperty(this.data, "system.type.value", "monster");
+
+    this.isCompanion = foundry.utils.getProperty(this.ddbMonster, "npc.flags.ddbimporter.entityTypeId") === "companion-feature";
+
+    if (this.isSummonSave) {
+      foundry.utils.setProperty(this.data, "flags.ddbimporter.spellSave", true);
+    }
+    if (this.isSummonAttack) {
+      foundry.utils.setProperty(this.data, "flags.ddbimporter.spellAttack", true);
+    }
+
+
+  }
+
+  override async loadEnricher() {
+    await this.enricher.init();
+    await this.enricher.load({
+      ddbParser: this,
+      monster: this.ddbMonster.npc,
+      name: this.name,
+    });
+  }
+
+  resetActionData() {
+    this.actionData = {
+      baseWeapon: null,
+      baseTool: null,
+      damage: {
+        base: undefined,
+        onSave: null,
+        // parts: [],
+        // versatile: "",
+      },
+      damageParts: [],
+      healingParts: [],
+      versatileParts: [],
+      saveParts: [],
+      formula: "",
+      target: {
+        template: {
+          count: "",
+          contiguous: false,
+          type: "", // line
+          size: "", // 60
+          width: "",
+          height: "",
+          units: "ft", // ft
+        },
+        affects: {
+          count: "",
+          type: "",
+          choice: false,
+          special: "",
+        },
+        prompt: true,
+        override: false,
+      },
+      duration: {
+        "value": "",
+        "units": "inst",
+      },
+      extraAttackBonus: 0,
+      baseAbility: null,
+      proficient: false,
+      properties: {
+        "amm": false,
+        "fin": false,
+        "fir": false,
+        "foc": false,
+        "hvy": false,
+        "lgt": false,
+        "lod": false,
+        "rch": false,
+        "rel": false,
+        "ret": false,
+        "spc": false,
+        "thr": false,
+        "two": false,
+        "ver": false,
+        "mgc": false,
+      },
+      range: {
+        value: null,
+        long: null,
+        units: "",
+        reach: null,
+      },
+      activation: {
+        type: undefined,
+        value: null,
+        condition: "",
+      },
+      save: {
+        ability: [],
+        dc: {
+          calculation: "",
+          formula: "",
+        },
+      },
+      uses: {
+        spent: null,
+        max: null,
+        recovery: [
+          // { period: "", type: 'recoverAll', formula: undefined },
+        ],
+      },
+      consumptionValue: null,
+      consumptionTargets: [],
+    };
+  }
+
+  constructor(name: string, { ddbMonster, html, type, titleHTML, fullName, actionCopy, updateExisting, hideDescription, sort, stripName, stripFlagData }: IDDBMonsterFeature) {
+
+    // a missing monster previously blew up further down with a TypeError; fail loudly instead
+    if (!ddbMonster) {
+      throw new Error(`DDBMonsterFeature "${name}" constructed without a ddbMonster`);
+    }
+
+    const enricher = new DDBMonsterFeatureEnricher({ activityGenerator: DDBMonsterFeatureActivity });
+    super({
+      enricher,
+      activityGenerator: DDBMonsterFeatureActivity,
+      useMidiAutomations: ddbMonster.addMonsterEffects,
+    });
+
+    this.name = utils.nameString(name);
+    this.ddbMonster = ddbMonster;
+    this.rawCharacter = ddbMonster.npc;
+    this.is2014 = ddbMonster.is2014;
+    this.is2024 = !this.is2014;
+    this.legacy = ddbMonster.legacy;
+    this.useCastActivity = ddbMonster.useCastActivity ?? false;
+    this.use2024Spells = ddbMonster.use2024Spells ?? false;
+
+    this.type = type ?? "action";
+    this.html = html ?? "";
+    this.titleHTML = titleHTML ?? undefined;
+    this.fullName = fullName ?? this.name;
+    this.actionCopy = actionCopy ?? false;
+    this.sort = sort ?? null;
+
+    this.hideDescription = hideDescription ?? utils.getSetting<boolean>("munching-policy-hide-description");
+    this.updateExisting = updateExisting ?? utils.getSetting<boolean>("munching-policy-update-existing");
+    this.stripName = stripName ?? utils.getSetting<boolean>("munching-policy-monster-strip-name");
+    this.stripFlagData = stripFlagData ?? utils.getSetting<boolean>("munching-policy-monster-strip-flag-data");
+
+    this.prepare();
+
+    // copy source details from parent
+    const oldSource = foundry.utils.getProperty(this, "ddbMonster.npc.system.details.source");
+    if (oldSource)
+      foundry.utils.setProperty(this, "data.system.source", oldSource);
+
+    const source = foundry.utils.getProperty(this, "data.system.source");
+    if (source) foundry.utils.setProperty(this.data, "system.source", source);
+
+    this.actionData = {} as any;
+    this.resetActionData();
+
+  }
+
+  damageModReplace(text: string) {
+    let result;
+    const diceParse = utils.parseDiceString(text);
+    if (this.actionData.baseAbility) {
+      const baseAbility = this.ddbMonster.abilities[this.actionData.baseAbility];
+      const baseAbilityMod = utils.calculateModifier(baseAbility.value ?? 10);
+      const bonusMod = (diceParse.bonus && diceParse.bonus !== 0) ? diceParse.bonus - baseAbilityMod : 0;
+      const useMod = (diceParse.bonus && diceParse.bonus !== 0) ? " + @mod " : "";
+      const reParse = utils.diceStringResultBuild(diceParse.diceMap, diceParse.dice, bonusMod, useMod);
+      result = reParse.diceString;
+    } else {
+      result = diceParse.diceString;
+    }
+
+    return result;
+  }
+
+  /** A bare "escape DC N" names no ability, so the shared outline offers Acrobatics or Athletics. */
+  _generateEscapeCheck(hit: string) {
+    const escape = hit.match(/escape DC ([0-9]+)/);
+    if (escape) this.additionalActivities.push(DDBActivityFactoryMixin.escapeCheckOutline(escape[1]));
+  }
+
+  generateDamageInfo() {
+    const hitIndex = this.strippedHtml.indexOf("Hit:");
+    let hit = (hitIndex > 0)
+      ? `${this.strippedHtml.slice(hitIndex)}`.trim()
+      : `${this.strippedHtml}`.replace(this.fullName, "").trim();
+    hit = hit.replace(/[–-–−]/g, "-");
+
+    this.ddbMonsterDamage = new DDBMonsterDamage(hit, { ddbMonsterFeature: this });
+
+    this.ddbMonsterDamage.generateDamage();
+    this.ddbMonsterDamage.generateRegain();
+
+    this.actionData.damageParts = this.ddbMonsterDamage.damageParts;
+    this.actionData.versatileParts = this.ddbMonsterDamage.versatileParts;
+    this.actionData.saveParts = this.ddbMonsterDamage.saveParts;
+    this.actionData.healingParts = this.ddbMonsterDamage.healingParts;
+    if (this.ddbMonsterDamage.levelBonus) this.levelBonus = true;
+    if (this.ddbMonsterDamage.profBonus) this.profBonus = true;
+
+    this._generateEscapeCheck(hit);
+
+    if (this.ddbMonsterDamage.damageModeWarnings.length) {
+      foundry.utils.setProperty(this.data, "flags.ddbimporter.monsterDamageWarnings", this.ddbMonsterDamage.damageModeWarnings);
+    }
+
+    // A renamed feat alternative occupies its original slot so later save/check IDs survive.
+    if (this.templateType !== "weapon" && this.ddbMonsterDamage.replacesVersatile) this.#queueDamageModes();
+
+    if (this.actionData.damageParts.length > 0 && this.templateType === "weapon") {
+      this.actionData.damage.base = this.actionData.damageParts[0].part;
+    } else if (this.templateType !== "weapon" && this.actionData.versatileParts.length > 0 && !this.enricher.noVersatile) {
+      this.additionalActivities.push({
+        name: `Versatile`,
+        type: "attack",
+        options: {
+          generateDamage: true,
+          damageParts: this.actionData.versatileParts,
+          includeBaseDamage: false,
+        },
+      });
+    }
+  }
+
+  /** New modes append after existing outlines; replacements are queued in the old versatile slot. */
+  #queueDamageModes() {
+    if (this.#damageModeQueued || !this.enricher.addAutoAdditionalActivities || this.enricher.noVersatile) return;
+    this.#damageModeQueued = true;
+    for (const mode of this.ddbMonsterDamage.damageModes) {
+      this.additionalActivities.push({
+        name: mode.name,
+        type: "attack",
+        options: {
+          generateDamage: true,
+          includeBaseDamage: false,
+          activationCondition: mode.condition,
+          // Reuse the former versatile ID as well as its slot to preserve document links.
+          ...(this.templateType !== "weapon" && this.ddbMonsterDamage.replacesVersatile ? {
+            data: { _id: utils.namedIDStub("Versatile", { prefix: "attack", postfix: this.additionalActivities.length }) },
+          } : {}),
+          damageParts: mode.damageParts.map((part) => SystemHelpers.buildDamagePart({
+            damageString: part.damageString, types: part.damageTypes,
+          })),
+        },
+      });
+    }
+  }
+
+  getActionType(): TActivationCost {
+    let action: TActivationCost;
+    // villain is not a real activation cost; the villain case is rewritten below
+    action = `${this.type}` as TActivationCost;
+    const actionAction = this.strippedHtml.toLowerCase().match(/as (a|an) action/);
+    const bonusAction = this.strippedHtml.toLowerCase().match(/as a bonus action/);
+    const reAction = this.strippedHtml.toLowerCase().match(/as a reaction/);
+    // e.g. mephit death
+    const deathDie = this.strippedHtml.toLowerCase().match(/(creature|target|it) dies/);
+    if (bonusAction) {
+      action = "bonus";
+    } else if (reAction) {
+      action = "reaction";
+    } else if (deathDie) {
+      action = "special";
+    } else if (actionAction) {
+      action = "action";
+    }
+    const startOfTurn = this.strippedHtml.toLowerCase().match(/at the start of each of its turn|at the start of its turn/i);
+    if (this.type === "special" && startOfTurn) {
+      action = "turnStart";
+    }
+    if (this.type === "lair") action = "lair";
+    else if (this.type === "mythic") action = "mythic";
+    else if (this.type === "villain") action = "special";
+    else if (this.type === "legendary") action = "legendary";
+    return action;
+  }
+
+
+  #matchRecharge(): RegExpMatchArray | null {
+    const matches = this.fullName.toLowerCase().match(/(?:\(|; )recharge ([0-9––−-]+)\)/);
+    return matches;
+  }
+
+  #getRechargeRecovery(): I5eSystemLimitedUsesRecovery | undefined {
+    const matches = this.isRecharge;
+    if (!matches) return undefined;
+    const value = matches[1].replace(/[––−-]/, "-").split("-").shift();
+    return {
+      period: "recharge",
+      formula: value,
+      type: "recoverAll",
+    };
+  }
+
+
+  getUses(name = false) {
+    const uses: I5eSystemLimitedUses & { recovery: I5eSystemLimitedUsesRecovery[] } = {
+      spent: null,
+      max: null,
+      recovery: [],
+    };
+
+    const recovery: I5eSystemLimitedUsesRecovery = {
+      period: "",
+      type: "recoverAll",
+      formula: undefined,
+    };
+
+    const usesSearch = name ? /(\d+)\/(\w+)\)/ : /\((\d+)\/(\w+)\)/;
+    const matchString = name
+      ? this.titleHTML
+        ? this.titleHTML
+        : this.name
+      : this.strippedHtml;
+    const usesMatch = matchString.match(usesSearch);
+    if (usesMatch && usesMatch[2].toLowerCase() !== "turn") {
+      uses.spent = 0;
+      uses.max = `${usesMatch[1]}`;
+      recovery.period = "day";
+      const perMatch = DICTIONARY.monsters.resets.find((reset) => reset.id === usesMatch[2]);
+      if (perMatch && perMatch.value) recovery.period = perMatch.value;
+    } else {
+      const shortLongRegex = (/Recharges after a (Short or Long|Long) Rest/i);
+      const rechargeMatch = matchString.match(shortLongRegex);
+      if (rechargeMatch) {
+        recovery.period = rechargeMatch[1] === "Long" ? "lr" : "sr";
+        uses.max = "1";
+      }
+    }
+
+    if (recovery.period) {
+      uses.recovery.push(recovery);
+    }
+
+    const recharge = this.#getRechargeRecovery();
+    if (recharge) {
+      uses.recovery.push(recharge);
+      if (uses.max === null) uses.max = "1";
+      uses.spent = 0;
+      this.actionData.consumptionValue = "1";
+    }
+
+    // if (!name && uses.max === null && uses.recovery.length === 0) {
+    //   return this.getUses(true);
+    // }
+
+    return uses;
+  }
+
+  getActivationValue() {
+    const matches = this.strippedHtml.match(/\(costs ([0-9]+) actions\)/i);
+    if (matches) return parseInt(matches[1]);
+    const nameMatch = this.name.match(/\(costs ([0-9]+) actions\)/i);
+    if (nameMatch) return parseInt(nameMatch[1]);
+    return null;
+  }
+
+  getActivation(): I5eActivityActivation {
+    const activation: I5eActivityActivation = foundry.utils.deepClone(this.actionData.activation);
+    activation.value = this.getActivationValue() ?? undefined;
+    activation.type = this.getActionType();
+    return activation;
+  }
+
+  getFeatSave() {
+    this.actionData.save = this.descriptionSave;
+    return this.actionData.save;
+  }
+
+  getReach(): number | null {
+    const reachSearch = /reach\s*(\s*\d+\s*)\s*ft/;
+    const match = this.strippedHtml.match(reachSearch);
+    if (!match) return null;
+    const value = parseInt(match[1].trim());
+    if (value === 5) return null;
+    return value;
+  }
+
+  getRange(): I5eWeaponRange {
+    const range: I5eWeaponRange = {
+      value: null,
+      long: null,
+      units: "",
+      reach: this.getReach(),
+    };
+
+    const rangeSearch1 = /range\s*(\d+)\s*\/\s*(\d+)\s*ft/;
+    const rangeSearch2 = /range\s*(\d+)\s*ft[.]*\s*\/\s*(\d+)\s*ft/;
+    const rangeSearch3 = /range\s*(\d+)\s*(:?ft|feet)/;
+    const reachSearch = /reach\s*(\d+)\s*(:?ft|feet)/;
+    const withinSearch = /within\s*(\d+)\s*(:?ft|feet)/;
+
+    const matches1 = this.strippedHtml.match(rangeSearch1);
+    const matches2 = this.strippedHtml.match(rangeSearch2);
+    const matches3 = this.strippedHtml.match(rangeSearch3);
+    const reachMatch = this.strippedHtml.match(reachSearch);
+    const withinMatch = this.strippedHtml.match(withinSearch);
+
+    if (matches1) {
+      range.value = parseInt(matches1[1]);
+      range.long = parseInt(matches1[2]);
+      range.units = "ft";
+    } else if (matches2) {
+      range.value = parseInt(matches2[1]);
+      range.long = parseInt(matches2[2]);
+      range.units = "ft";
+    } else if (matches3) {
+      range.value = parseInt(matches3[1]);
+      range.units = "ft";
+    } else if (reachMatch) {
+      const value = parseInt(reachMatch[1]);
+      if (this.templateType === "weapon") {
+        if (value > 5) this.actionData.properties.rch = true;
+        range.reach = value;
+      } else {
+        range.value = value;
+      }
+      range.units = "ft";
+    } else if (withinMatch) {
+      range.value = parseInt(withinMatch[1]);
+      range.units = "ft";
+    } else {
+      if (this.meleeAttack) {
+        range.value = 5;
+        range.units = "ft";
+      }
+    }
+
+    return range;
+  }
+
+  checkAbility(abilitiesToCheck: T5eAbility[]) {
+    const result: { success: boolean; ability: T5eAbility | null; proficient: boolean | null } = {
+      success: false,
+      ability: null,
+      proficient: null,
+    };
+
+    for (const ability of abilitiesToCheck) {
+      const monsterAbility = this.ddbMonster.abilities[ability];
+      const abilityMod = utils.calculateModifier(monsterAbility.value ?? 10);
+      if (this.toHit == (this.ddbMonster.proficiencyBonus ?? 0) + abilityMod) {
+        result.success = true;
+        result.ability = ability;
+        result.proficient = true;
+        break;
+      } else if (this.toHit == abilityMod) {
+        result.success = true;
+        result.ability = ability;
+        result.proficient = false;
+        break;
+      }
+    }
+
+    return result;
+  }
+
+  checkAbilities(abilitiesToCheck: T5eAbility[], negatives = false) {
+    const results = abilitiesToCheck.map((ability) => {
+      const result: {
+        success: boolean;
+        ability: T5eAbility;
+        proficient: boolean | null;
+        bonus: number;
+      } = {
+        success: false,
+        ability,
+        proficient: null,
+        bonus: 0,
+      };
+      const monsterAbility = this.ddbMonster.abilities[ability];
+      const abilityMod = utils.calculateModifier(monsterAbility.value ?? 10);
+      if (this.toHit > (this.ddbMonster.proficiencyBonus ?? 0) + abilityMod) {
+        result.success = true;
+        result.proficient = true;
+        result.bonus = this.toHit - (this.ddbMonster.proficiencyBonus ?? 0) - abilityMod;
+      } else if (this.toHit > abilityMod) {
+        result.success = true;
+        result.proficient = false;
+        result.bonus = this.toHit - abilityMod;
+      } else if (negatives) {
+        result.success = true;
+        result.proficient = false;
+        result.bonus = this.toHit - abilityMod;
+      }
+      return result;
+    });
+
+    return results;
+  }
+
+
+  generateWeaponAttackInfo() {
+    const abilities: T5eAbility[] = ["str", "dex", "int", "wis", "cha", "con"];
+    let initialAbilities: T5eAbility[];
+    let weaponAbilities: T5eAbility[] = ["str", "dex"];
+    const spellAbilities: T5eAbility[] = ["cha", "wis", "int"];
+
+    // we have a weapon name match so we can infer a bit more
+    const weaponLookup = this.weaponLookup;
+    if (weaponLookup) {
+      for (const [key, value] of Object.entries(weaponLookup.properties)) {
+        // logger.info(`${key}: ${value}`);
+        (this.actionData.properties as Record<string, any>)[key] = value;
+      }
+      const strMod = utils.calculateModifier(this.ddbMonster.abilities["str"].value ?? 10);
+      const dexMod = utils.calculateModifier(this.ddbMonster.abilities["dex"].value ?? 10);
+      const versatileWeapon = this.actionData.properties.ver && dexMod > strMod;
+      if (versatileWeapon || weaponLookup.actionType == "rwak") {
+        weaponAbilities = ["dex"];
+      } else if (weaponLookup.actionType == "mwak") {
+        weaponAbilities = ["str"];
+      }
+      this.actionData.weaponType = weaponLookup.weaponType;
+
+      const characterWeapon = DICTIONARY.actor.proficiencies.find((w) => w.name === weaponLookup.name);
+      if (characterWeapon) {
+        if (characterWeapon?.ammunitionType) {
+          foundry.utils.setProperty(this.data, "system.ammunition.type", characterWeapon.ammunitionType);
+        }
+        if (characterWeapon?.mastery) {
+          foundry.utils.setProperty(this.data, "system.mastery", characterWeapon.mastery);
+        }
+        if (characterWeapon?.foundryValue) {
+          this.actionData.baseWeapon = characterWeapon.foundryValue;
+          foundry.utils.setProperty(this.data, "system.type.baseItem", characterWeapon.foundryValue);
+        }
+      }
+
+    } else if (this.meleeAttack) {
+      this.actionData.weaponType = "simpleM";
+    } else if (this.rangedAttack) {
+      this.actionData.weaponType = "simpleR";
+    }
+
+    if (this.strippedHtml.includes("is a magic weapon attack")) {
+      this.actionData.properties["mgc"] = true;
+      foundry.utils.setProperty(this.data, "flags.midiProperties.magicdam", true);
+    }
+
+    if (this.spellAttack) {
+      initialAbilities = spellAbilities;
+    } else if (this.weaponAttack) {
+      initialAbilities = weaponAbilities;
+    } else {
+      initialAbilities = abilities;
+    }
+
+    // force companions to null and proficient
+    if (this.yourSpellAttackModToHit) {
+      this.actionData.baseAbility = null;
+      this.actionData.proficient = true;
+    } else if (this.weaponAttack || this.spellAttack) {
+      // check most likely initial attacks - str and dex based weapon, mental for spell
+      const checkInitialAbilities = this.checkAbility(initialAbilities);
+      if (checkInitialAbilities.success) {
+        this.actionData.baseAbility = checkInitialAbilities.ability;
+        this.actionData.proficient = checkInitialAbilities.proficient ?? false;
+      }
+
+      // okay lets see if its one of the others then!
+      if (!this.actionData.baseAbility) {
+        const checkAllAbilities = this.checkAbility(abilities);
+        if (checkAllAbilities.success) {
+          this.actionData.baseAbility = checkAllAbilities.ability;
+          this.actionData.proficient = checkAllAbilities.proficient ?? false;
+        }
+      }
+
+      // okay, some oddity, maybe magic bonus, lets calculate one!
+      // we are going to assume it's dex or str based.
+      if (!this.actionData.baseAbility) {
+        const magicAbilities = this.checkAbilities(initialAbilities);
+
+        const filteredAbilities = magicAbilities.filter((ab) => ab.success == true).sort((a, b) => {
+          if (a.proficient == !b.proficient) return -1;
+          if (b.proficient == !a.proficient) return 1;
+          if (a.proficient == b.proficient) {
+            if (a.bonus > b.bonus) return 1;
+            if (b.bonus > a.bonus) return -1;
+          }
+          return 0;
+        });
+
+        // fine lets use the first hit
+        if (filteredAbilities.length >= 1 && filteredAbilities[0].success) {
+          this.actionData.baseAbility = filteredAbilities[0].ability;
+          this.actionData.proficient = filteredAbilities[0].proficient ?? false;
+          this.actionData.extraAttackBonus = filteredAbilities[0].bonus;
+        }
+      }
+
+      // negative mods!
+      if (!this.actionData.baseAbility) {
+        logger.info(`Negative ability parse for ${this.ddbMonster.npc.name}, to hit ${this.toHit} with ${this.name}`);
+
+        const magicAbilities = this.checkAbilities(initialAbilities, true);
+
+        const filteredAbilities = magicAbilities.filter((ab: any) => ab.success == true).sort((a, b) => {
+          if (a.proficient == !b.proficient) return -1;
+          if (b.proficient == !a.proficient) return 1;
+          if (a.proficient == b.proficient) {
+            if (a.bonus < b.bonus) return 1;
+            if (b.bonus < a.bonus) return -1;
+          }
+          return 0;
+        });
+        logger.debug("Filtered abilities", { filteredAbilities, html: this.strippedHtml });
+        // fine lets use the first hit
+        if (filteredAbilities.length >= 1 && filteredAbilities[0].success) {
+          this.actionData.baseAbility = filteredAbilities[0].ability;
+          this.actionData.proficient = filteredAbilities[0].proficient ?? false;
+          this.actionData.extraAttackBonus = filteredAbilities[0].bonus;
+        } else {
+          logger.error("Unable to calculate attack!", { filteredAbilities, html: this.strippedHtml, ddbFeature: this });
+        }
+      }
+    }
+  }
+
+  _targetsCreature() {
+    const matchText = this.strippedHtml.replace(/[­––−-]/gu, "-").replace(/-+/g, "-");
+    const creature = /You touch (?:a|one) (?:willing |living )?creature|target(?:\w+) (\w*) creature within|affecting one creature|creature you touch|a creature you|creature( that)? you can see|interrupt a creature|would strike a creature|creature of your choice|creature or object within range|cause a creature|creature must be within range|a creature in range|each creature within/gi;
+    const creaturesRange = /(humanoid|monster|creature|target|beast)(s)? (or loose object )?(of your choice )?(that )?(you can see )?within range/gi;
+    const targets = /attack against the target|at a target in range/gi;
+    return matchText.match(creature)
+      || matchText.match(creaturesRange)
+      || matchText.match(targets);
+  }
+
+
+  /**
+   * Derive an activity target from rules text, by default the whole feature.
+   *
+   * A multi-mode feature passes one section at a time: an eye ray table's Disintegration Ray
+   * mentions a "10-foot cube" of an object, and read over the whole feature that cube would land
+   * on every ray. `mutateRange` is off for a section so a "within N feet of you" match cannot
+   * rewrite the feature's own range.
+   */
+  getTarget({ text = this.strippedHtml, mutateRange = true }: { text?: string; mutateRange?: boolean } = {}): I5eActivityTarget {
+    // fully populated template/affects so the narrowing survives the regex branches below
+    const target: I5eActivityTarget & {
+      template: NonNullable<I5eActivityTarget["template"]>;
+      affects: NonNullable<I5eActivityTarget["affects"]>;
+    } = {
+      template: {
+        count: "",
+        contiguous: false,
+        type: "", // line
+        size: "", // 60
+        width: "",
+        height: "",
+        units: "ft", // ft
+      },
+      affects: {
+        count: "",
+        type: "",
+        choice: false,
+        special: "",
+      },
+      prompt: true,
+      override: false,
+    };
+
+    // 90-foot line that is 10 feet wide
+    // in a 90-foot cone
+    const matchText = text.replace(/[­––−-]/gu, "-").replace(/-+/g, "-");
+    // console.warn(matchText);
+    // 2024 stat blocks: "each creature in a 90-foot-long, 5-foot-wide Line" (DDB sometimes breaks
+    // the hyphenation as "5-foot- wide")
+    const lineSearch = /(\d+)-foot-long,? (\d+)-foot-? ?wide line|(\d+)-foot line|line that is (\d+) feet/i;
+    const coneSearch = /(\d+)-foot cone/i;
+    // "disintegrates a 10-foot cube of it" is how much of an object is destroyed, not an area
+    const cubeSearch = /(\d+)-foot cube(?! of it\b)/i;
+    const sphereSearch = /(\d+)-foot-radius sphere/i;
+
+    const coneMatch = matchText.match(coneSearch);
+    const lineMatch = matchText.match(lineSearch);
+    const cubeMatch = matchText.match(cubeSearch);
+    const sphereMatch = matchText.match(sphereSearch);
+
+    const creatureTargetCount = (/(each|one|a|the) creature(?: or object)?/ig).exec(matchText);
+    const creatureCountWord = creatureTargetCount?.[1]?.toLowerCase() ?? "";
+    const singleCreatureWord = ["one", "a", "the"].includes(creatureCountWord);
+
+    if (coneMatch) {
+      target.template.size = coneMatch[1];
+      target.template.units = "ft";
+      target.template.type = "cone";
+    } else if (lineMatch) {
+      target.template.size = lineMatch[1] ?? lineMatch[3] ?? lineMatch[4];
+      if (lineMatch[2]) target.template.width = lineMatch[2];
+      target.template.units = "ft";
+      target.template.type = "line";
+    } else if (cubeMatch) {
+      target.template.size = cubeMatch[1];
+      target.template.units = "ft";
+      target.template.type = "cube";
+    } else if (sphereMatch) {
+      target.template.size = sphereMatch[1];
+      target.template.units = "ft";
+      target.template.type = "sphere";
+    } else {
+      const aoeSizeRegex = /(?<!creatures? (?:it|you) can see |targets? (?:it|you) can see |objects? (?:it|you) can see |one creature |a creature |the creature |that creature )(?:within|in a|fills a) (\d+)(?: |-)(?:feet|foot|ft|ft\.)(?: |-)(cone|radius|emanation|sphere|line|cube|of it|of an|of the|of you|of yourself)(\w+[. ])?/ig;
+
+      // each creature that isn’t an Undead in a 20-foot Emanation originating from the lich.
+      const aoeSizeMatch = aoeSizeRegex.exec(matchText);
+
+      // console.warn(`Target generation for ${this.name}`, {
+      //   aoeSizeMatch,
+      // });
+
+      // A single-target ability (e.g. "one creature ... within 30 feet") must not
+      // gain an area template from a loose positional match like "control while
+      // within 60 feet of it". Emanations ("each creature within X feet of it")
+      // and real named shapes are unaffected.
+      const singleCreatureTarget = singleCreatureWord && !(/each creature/i).test(matchText);
+
+      if (aoeSizeMatch) {
+        const type = aoeSizeMatch[3]?.trim() ?? aoeSizeMatch[2]?.trim() ?? "radius";
+        const realShape = ["cone", "radius", "sphere", "line", "cube"].includes(type);
+        if (mutateRange && aoeSizeMatch[2] && aoeSizeMatch[2].trim() === "of you") {
+          this.actionData.range.units = "self";
+        }
+        if (realShape || !singleCreatureTarget) {
+          target.template.type = realShape ? type as TTemplate : "radius";
+          target.template.size = aoeSizeMatch[1] ?? "";
+          target.template.units = "ft";
+        }
+      }
+    }
+
+    if (target.template.type === "" && this.healingAction) {
+      target.affects.type = "self";
+    }
+
+    const targetsCreature = this._targetsCreature();
+    if (targetsCreature || creatureTargetCount) {
+      target.affects.count = singleCreatureWord ? "1" : "";
+      target.affects.type = creatureTargetCount && creatureTargetCount[2] ? "creatureOrObject" : "creature";
+    }
+
+    if (target.affects.type === "" && this.meleeAttack) {
+      target.affects.type = "creature";
+      target.affects.count = "1";
+    }
+
+    return target;
+  }
+
+  #getHiddenDescription() {
+    const nameChoice = utils.getSetting<string>("munching-policy-hide-description-choice");
+    const hideItemName = utils.getSetting<boolean>("munching-policy-hide-item-name");
+    let actorDescriptor = `[[lookup @name]]`;
+
+    if (nameChoice === "TYPE") {
+      actorDescriptor = `[[lookup @details.type.config.label]]`;
+    } else if (nameChoice === "MONSTER") {
+      actorDescriptor = "Monster";
+    } else if (nameChoice === "NPC") {
+      actorDescriptor = "NPC";
+    }
+
+    let description = `<section class="secret">\n${this.html}`;
+    if (this.activityType === "attack" && !this.spellAttack) {
+      const featureName = hideItemName ? "" : ` with its [[lookup @item.name]]`;
+      description += `\n</section>\nThe ${actorDescriptor} attacks${featureName}.`;
+    } else if (this.spellAttack || this.isSpellSave) {
+      const featureName = hideItemName ? "a spell" : "[[lookup @item.name]]";
+      description += `\n</section>\nThe ${actorDescriptor} casts ${featureName}.`;
+    } else if (this.activityType === "save") {
+      const featureName = hideItemName ? "a feature" : "[[lookup @item.name]]";
+      description += `\n</section>\nThe ${actorDescriptor} uses ${featureName} and a save is required.`;
+    } else {
+      description += `\n</section>\nThe ${actorDescriptor} uses ${hideItemName ? "a feature" : "[[lookup @item.name]]"}.`;
+    }
+    return description;
+  }
+
+
+  #processMultiAttack(description: string) {
+    if (this.is2014) return description;
+
+    const actionNames = new Set<string>();
+    const extractActions = ((str: string) => {
+      return str
+        .replace("many Bite", "Bite")
+        .replace("if available", "")
+        .replace("attacks. It can replace one attack with a ", ",")
+        .replace(". It can replace one attack with a use of", ",")
+        .replaceAll("and one with its", "")
+        .replaceAll("one with its", "")
+        .replace("attack and one ", ",")
+        .replace("attack, one ", ",")
+        .replace("attack, two ", ",")
+        .replace("attack, and one ", ",")
+        .replace("attacks, and one ", ",")
+        .replace("attacks and one ", ",")
+        .replace("attack and two ", ",")
+        .replace("attacks or two ", ",")
+        .replace("attack and three other ", ",")
+        .replace("attack and three ", ",")
+        .replace("attacks or four ", ",")
+        .replace("attacks or five ", ",")
+        .replaceAll(", or ", ",")
+        .replaceAll(" or ", ",")
+        .split(",")
+        .map((s) => s.trim());
+    });
+
+    const handleReplaceNames = ((str: string) => {
+      const replaceNames = extractActions(str);
+      // console.warn("Replace names", replaceNames);
+      for (const name of replaceNames) {
+        const listNameRegex = /\(\w\) (.*)/i;
+        const listNameMatch = listNameRegex.exec(name);
+
+        if (listNameMatch) {
+          const listName = listNameMatch[1];
+
+          if (listName.includes("Spellcasting")) actionNames.add("Spellcasting");
+          else actionNames.add(listName.split("(")[0].trim());
+        } else if (name.includes("Spellcasting")) {
+          actionNames.add("Spellcasting");
+        } else {
+          actionNames.add(name.trim());
+        }
+      }
+    });
+
+    const orMakesRegex = /The (?:.*) makes (\w+) (?<attackNames>.*) attack, or it makes (\w+) (?<replaceName>.*?) attacks/i;
+    const orMakesMatch = orMakesRegex.exec(this.strippedHtml);
+
+    const multRegex = /The (?:.*) makes (\w+) attacks, using (?<attackNames>.*:?)( in any combination(?:, and( it)? uses (?<attackNames2>.*)\.)?)/i;
+    const multiMatch = multRegex.exec(this.strippedHtml);
+    const basicMARegex = /The (?:.*) makes (\w+) (?<attackNames>.*:?) attacks?(?:(?: and uses|, and it can use) (?<attackNames2>.*))\./i;
+    const basicMAMatch = basicMARegex.exec(this.strippedHtml);
+
+    const simpleMARegex = /The (?:.*) makes (\w+) attacks: (?<attackNames>.*:?)\./i;
+    const simpleMAMatch = simpleMARegex.exec(this.strippedHtml);
+
+    const makesAttRegex = /The (?:.*) makes (\w+) (?<attackNames>.*?) attacks(, or it makes three (?<attackNames2>.*) attacks| and| as| or uses (?<attackNames3>.*?)(?:\.| (twice|three))|, using (?<attackNames4>.*?) in any combination|\.)/i;
+    const makesAttMatch = makesAttRegex.exec(this.strippedHtml);
+
+    const fallbackMakesOrRegex = /The (?:.*) makes (\w+) (?<attackNames>.*?) attack, and it uses (?<attackNames2>.*?)\./i;
+    const fallbackMakesOrMatch = fallbackMakesOrRegex.exec(this.strippedHtml);
+
+    const superFallbackRegex = /The (?:.*) makes (\w+) (?<attackNames>.*:?) attacks?/i;
+    const superFallbackMatch = superFallbackRegex.exec(this.strippedHtml);
+
+    const match = orMakesMatch
+      ?? multiMatch
+      ?? basicMAMatch
+      ?? simpleMAMatch
+      ?? makesAttMatch
+      ?? fallbackMakesOrMatch
+      ?? superFallbackMatch;
+
+    const matchedGroups = match?.groups;
+    if (matchedGroups) {
+      const attackNames: string[] = [];
+      if (matchedGroups.attackNames) attackNames.push(matchedGroups.attackNames);
+      if (matchedGroups.attackNames2) attackNames.push(matchedGroups.attackNames2);
+      if (matchedGroups.attackNames3) attackNames.push(matchedGroups.attackNames3);
+      if (matchedGroups.attackNames4) attackNames.push(matchedGroups.attackNames4);
+      if (matchedGroups.replaceName) attackNames.push(matchedGroups.replaceName);
+      for (const attackNameString of attackNames) {
+        handleReplaceNames(attackNameString);
+      }
+    }
+
+    const replaceRegex = /It can replace (?:\w+|the (?:\w+)) attacks? with a use of (?<replaceName>.*?)\./i;
+    const replaceRegex2 = /It can replace (?:\w+|the (?:\w+)) attacks? with a (?<replaceName>.*?) attack\./i;
+    const replaceMatch = replaceRegex.exec(this.strippedHtml) ?? replaceRegex2.exec(this.strippedHtml);
+    if (replaceMatch?.groups) {
+      handleReplaceNames(replaceMatch.groups.replaceName);
+    }
+
+    const andRegex = /The (?:.*) can use its (?<attackNames>.*) and makes/i;
+    const andMatch = andRegex.exec(this.strippedHtml);
+    if (andMatch?.groups) {
+      handleReplaceNames(andMatch.groups.attackNames);
+    }
+
+    const andCanRegex = /(?:and can use|It also uses|and it uses|and it can use) (?<attackNames>.*)\./i;
+    const andCanMatch = andCanRegex.exec(this.strippedHtml);
+    if (andCanMatch?.groups) {
+      handleReplaceNames(andCanMatch.groups.attackNames);
+    }
+
+    const ifItUsedRegex = /if it used (?<attackNames>.*) this turn/i;
+    const ifItUsedMatch = ifItUsedRegex.exec(this.strippedHtml);
+    if (ifItUsedMatch?.groups) {
+      handleReplaceNames(ifItUsedMatch.groups.attackNames);
+    }
+
+    const usesRegex = /The (?:.*) uses (?<attackNames>.*?)(?:\.| twice| three| four| five)/i;
+    const usesMatch = usesRegex.exec(this.strippedHtml);
+    if (usesMatch?.groups) {
+      handleReplaceNames(usesMatch.groups.attackNames);
+    }
+
+    if (CONFIG.DDBI.DEV.multiattackNotes) {
+      if (actionNames.size === 0) {
+        const noMultiattack = CONFIG.DDBI.NO_MULTIATTACK ?? [];
+        const noMultiattackDetails = CONFIG.DDBI.NO_MULTIATTACK_DETAILS ?? [];
+        CONFIG.DDBI.NO_MULTIATTACK = noMultiattack;
+        CONFIG.DDBI.NO_MULTIATTACK_DETAILS = noMultiattackDetails;
+        noMultiattack.push(this.strippedHtml);
+        noMultiattackDetails.push({ actionNames, name: this.ddbMonster.name, html: this.strippedHtml, match, is2014: this.is2014 });
+      } else {
+        const multiattackMatches = CONFIG.DDBI.MULTIATTACK_MATCHES ?? [];
+        const multiattackMatchesDetails = CONFIG.DDBI.MULTIATTACK_MATCHES_DETAILS ?? [];
+        CONFIG.DDBI.MULTIATTACK_MATCHES = multiattackMatches;
+        CONFIG.DDBI.MULTIATTACK_MATCHES_DETAILS = multiattackMatchesDetails;
+        multiattackMatches.push(actionNames);
+        multiattackMatchesDetails.push({ actionNames, name: this.ddbMonster.name, html: this.strippedHtml, match, is2014: this.is2014 });
+
+      }
+    }
+
+
+    // console.warn(`${this.ddbMonster.name}`,{
+    //   orMakesMatch,
+    //   basicMAMatch,
+    //   multiMatch,
+    //   simpleMAMatch,
+    //   makesAttMatch,
+    //   fallbackMakesOrMatch,
+    //   match,
+    //   strippedHtml: this.strippedHtml,
+    //   is2014: this.is2014,
+    //   this: this,
+    //   actionNames,
+    // });
+
+    for (const actionName of actionNames) {
+      description = description.replaceAll(actionName, `[[/item ${actionName}]]`);
+    }
+    return description;
+  }
+
+  async #generateDescription() {
+    this.html = this.html.replace(/<strong> \.<\/strong>/, "").trim().replaceAll("<strong></strong>", "").replaceAll("<em></em>", "");
+    let description = this.hideDescription ? this.#getHiddenDescription() : `${this.html}`;
+    description = description.replaceAll("<em><strong></strong></em>", "");
+    if (this.originalName === "Multiattack") {
+      description = this.#processMultiAttack(description);
+    }
+    description = await DDBReferenceLinker.parseMonsterDescription({
+      text: description,
+      document: this.data,
+      actor: this.ddbMonster.npc,
+    });
+
+    this.data.system.description.value = await DDBTable.generateTable({
+      parentName: this.ddbMonster.npc.name,
+      html: description,
+      updateExisting: this.updateExisting,
+      sourceBook: this.data.system?.source?.book ?? this.ddbMonster.npc.system?.source?.book,
+      notifier: this.notifier,
+    });
+    await this._linkActivityDescriptions();
+    this.data.system.description.value = `<div class="ddb">
+${this.data.system.description.value}
+</div>`;
+
+
+  }
+
+  /**
+   * Enrichers that split a feature into per-activity chunks (e.g. Eye Rays, and anything else
+   * that carves the description up) set those chunks as raw DDB html. Give them the same
+   * reference linking the feature description gets - DDB anchors, damage and attack rolls,
+   * tags - so a ray's card reads like the feature does.
+   * Tables are deliberately not generated per activity: the journal they create belongs to the feature.
+   */
+  async _linkActivityDescriptions(): Promise<void> {
+    for (const activity of Object.values(this.data.system.activities ?? {})) {
+      const text = activity.description?.value;
+      if (!text?.trim()) continue;
+      activity.description!.value = await DDBReferenceLinker.parseMonsterDescription({
+        text,
+        document: this.data,
+        actor: this.ddbMonster.npc,
+      });
+    }
+  }
+
+  #buildAction() {
+    if (Number.isInteger(parseInt(String(this.actionData.activation.value)))) {
+      this.actionData.consumptionValue = this.actionData.activation.value ?? null;
+    } else {
+      this.actionData.activation.value = 1;
+    }
+
+    if (this.templateType === "weapon") {
+      this.weaponData.system.damage = this.actionData.damage;
+    }
+
+    if ("proficient" in this.data.system) {
+      this.data.system.proficient = this.actionData.proficient;
+    }
+
+    if (this.templateType === "weapon" && (this.weaponAttack || this.spellAttack)) {
+      this.weaponData.system.equipped = true;
+    }
+
+    if (this.weaponAttack && this.templateType === "weapon") {
+      if (this.actionData.weaponType) {
+        this.data.system.type.value = this.actionData.weaponType;
+      }
+    } else if (this.spellAttack) {
+      // if (!this.meleeAttack && !this.rangedAttack) {
+      //   this.activityType = "save";
+      // }
+      // if (this.templateType === "feat") {
+      //   this.data.system.equipped = true;
+      // }
+      foundry.utils.setProperty(this.data, "flags.midiProperties.magicdam", true);
+      foundry.utils.setProperty(this.data, "flags.midiProperties.magiceffect", true);
+      this.actionData.properties.mgc = true;
+    }
+
+    if (this.templateType === "weapon") {
+      this.weaponData.system.damage = this.actionData.damage;
+      this.weaponData.system.range = this.actionData.range;
+    }
+    this.data.system.uses = this.actionData.uses;
+
+    for (const [key, value] of Object.entries(this.actionData.properties) as [(TWeaponProperties | TFeatProperties), boolean][]) {
+      if (value) (this.data.system.properties as (TWeaponProperties | TFeatProperties)[]).push(key);
+    }
+
+    if (this.name.includes("/Day") || this.name.includes("Recharges")) {
+      this.data.system.uses = this.getUses(true);
+    }
+
+    return this.data;
+  }
+
+  #buildLair() {
+    this.actionData.activation.type = "lair";
+    if (this.data.name.trim() === "Lair Actions") {
+      this.actionData.activation.value = 1;
+    } else if (this.data.name.trim() === "Regional Effects") {
+      this.actionData.activation.type = "none";
+    }
+    return this.data;
+  }
+
+  #buildLegendary() {
+    // for the legendary actions feature itself we don't want to do most processing
+    if (this.name === "Legendary Actions") {
+      this.activityType = "none";
+      this.actionData.activation.type = "none";
+      return;
+    }
+
+    this.actionData.activation.type = "legendary";
+
+    this.actionData.consumptionTargets.push({
+      type: "attribute",
+      target: "resources.legact.value",
+      value: this.actionData.activation.value ?? 1,
+      scaling: {
+        mode: "",
+        formula: "",
+      },
+    });
+
+    if (Number.isInteger(parseInt(String(this.actionData.activation.value)))) {
+      this.actionData.consumptionValue = this.actionData.activation.value ?? null;
+    } else {
+      // this.data.system.activation.cost = 1;
+      this.actionData.activation.value = 1;
+    }
+
+    // only attempt to update these if we don't parse an action
+    // most legendary actions are just do x thing, where thing is an existing action
+    // these have been copied from the existing actions so we don't change
+    if (!this.actionCopy) {
+      this.data.system.uses = this.actionData.uses;
+      if (this.templateType === "weapon") {
+        this.weaponData.system.damage = this.actionData.damage;
+        this.weaponData.system.range = this.actionData.range;
+      }
+    } else {
+      for (const id of Object.keys(this.data.system.activities)) {
+        const activity = this.data.system.activities[id];
+        // A copied attack keeps its eligibility condition when it becomes legendary.
+        activity.activation = {
+          ...foundry.utils.deepClone(this.actionData.activation),
+          condition: activity.activation?.condition || this.actionData.activation.condition,
+        };
+        const consumption = activity.consumption;
+        if (consumption) consumption.targets = this.actionData.consumptionTargets;
+      }
+    }
+
+  }
+
+  #buildSpecial() {
+    if (Number.isInteger(parseInt(String(this.actionData.activation.value)))) {
+      this.actionData.consumptionValue = this.actionData.activation.value ?? null;
+    } else {
+      this.actionData.activation.value = 1;
+    }
+
+    this.data.system.uses = this.actionData.uses;
+
+    if (this.templateType === "weapon") {
+      this.weaponData.system.damage = this.actionData.damage;
+      this.weaponData.system.range = this.actionData.range;
+    }
+
+    // legendary resistance check
+    if (this.isLegendaryResistance) {
+      this.actionData.activation.type = "special";
+      this.actionData.activation.value = null;
+      this.actionData.activation.condition = "Fails a saving throw";
+      this.actionData.consumptionTargets.push({
+        type: "attribute",
+        target: "resources.legres.value",
+        value: 1,
+        scaling: {
+          mode: "",
+          formula: "",
+        },
+      });
+      this.data.system.uses = {
+        max: null,
+        spent: null,
+      };
+    }
+
+    // if this special action has nothing to do, then we remove the activation type
+    // if (this.activityType === null
+    //   && (this.data.system.uses.max === null || this.data.system.uses.max === 0)
+    //   // TODO: ensure this is now correct
+    //   && this.data.system.uses.recovery.length === 0
+    // ) {
+    //   this.actionData.activation = {
+    //     value: null,
+    //     type: "",
+    //     condition: "",
+    //   };
+    // }
+  }
+
+  #buildVillain() {
+    if (this.name !== "Villain Actions") {
+      this.data.system.uses = {
+        spent: 0,
+        max: this.actionData.uses.max ? `${this.actionData.uses.max}` : null,
+        recovery: [
+          { period: "sr", type: "recoverAll", formula: undefined },
+        ],
+      };
+    }
+
+    if (this.templateType === "weapon") {
+      this.weaponData.system.damage = this.actionData.damage;
+      this.weaponData.system.range = this.actionData.range;
+    }
+
+  }
+
+  #generateActionData() {
+    if (this.weaponAttack || this.spellAttack) {
+      this.generateWeaponAttackInfo();
+    }
+    this.generateDamageInfo();
+
+    this.actionData.range = this.getRange();
+    this.actionData.activation = this.getActivation();
+    this.actionData.save = this.getFeatSave();
+    this.actionData.target = this.getTarget();
+    this.actionData.uses = this.getUses();
+  }
+
+  override _getSaveActivity({ name = null, nameIdPostfix = null }: {
+    name?: string | null;
+    nameIdPostfix?: string | null;
+  }, options = {}) {
+    const itemOptions = foundry.utils.mergeObject({
+      generateRange: this.templateType !== "weapon",
+      includeBaseDamage: false,
+      damageParts: this.actionData.saveParts,
+      onSave: this.halfDamage ? "half" : "none",
+    }, options);
+
+    return super._getSaveActivity({ name, nameIdPostfix }, itemOptions);
+  }
+
+  override _getAttackActivity({ name = null, nameIdPostfix = null }: {
+    name?: string | null;
+    nameIdPostfix?: string | null;
+  }, options = {}) {
+    const isFlatWeaponDamage = this.templateType === "weapon" && this.actionData.damageParts.length > 0
+      ? !this.actionData.damageParts[0].includesDice
+      : false;
+
+    const noDamageMods = this.actionData.damageParts.every((p) => !p.damageHasMod);
+    const noModWeapon = this.templateType === "weapon" && noDamageMods;
+
+    let parts: I5eDamagePart[] = [];
+
+    if (isFlatWeaponDamage || noModWeapon) {
+      // includes no dice, i.e. is flat, we want to ignore the base damage
+      parts = this.actionData.damageParts.map((s) => s.part);
+    } else if (this.actionData.damageParts.length > 1 && this.templateType === "weapon") {
+      parts = this.actionData.damageParts.slice(1).map((s) => s.part);
+    } else if (this.templateType === "feat") {
+      // e.g. Armanite Hooves
+      parts = this.actionData.damageParts.map((s) => s.part);
+    }
+
+    // console.warn("activity build", {
+    //   isFlatWeaponDamage,
+    //   this: this,
+    //   noDamageMods,
+    //   noModWeapon,
+    //   parts,
+    //   options,
+    //   includeBaseDamage: (this.templateType === "weapon" && !isFlatWeaponDamage) && !noModWeapon,
+    // });
+
+    const itemOptions = foundry.utils.mergeObject({
+      generateAttack: true,
+      generateRange: this.templateType !== "weapon",
+      generateDamage: parts.length > 0 || !this.isSave,
+      includeBaseDamage: (this.templateType === "weapon" && !isFlatWeaponDamage) && !noModWeapon,
+      damageParts: parts,
+    }, options);
+
+    return super._getAttackActivity({ name, nameIdPostfix }, itemOptions);
+  }
+
+  override _getUtilityActivity({ name = null, nameIdPostfix = null } = {}, options = {}) {
+    const itemOptions = foundry.utils.mergeObject({
+      generateRange: this.templateType !== "weapon",
+      includeBaseDamage: this.templateType === "weapon",
+    }, options);
+
+    return super._getUtilityActivity({ name, nameIdPostfix }, itemOptions);
+  }
+
+  override _getDamageActivity({ name = null, nameIdPostfix = null } = {}, options = {}) {
+    const itemOptions = foundry.utils.mergeObject({
+      generateRange: this.templateType !== "weapon",
+      includeBaseDamage: this.templateType === "weapon",
+    }, options);
+
+    return super._getDamageActivity({ name, nameIdPostfix }, itemOptions);
+  }
+
+  /**
+   * The labelled sections of this feature's text that each name a save, memoised.
+   *
+   * A monster feature is normally one roll, but a few describe several: an eye ray table
+   * (Mindwitness numbers its rays in italics), a swallow (the save to be swallowed and the save
+   * to regurgitate), a monk-style strike offering a choice of rider, and the lair/regional
+   * blocks, which DDB ships as one blob covering every lair action.
+   */
+  get multiSaveSections(): { slice: ISectionSlice; save: IParsedSave }[] {
+    this.#multiSaveSectionCache ??= this._saveBearingSections(this.html);
+    return this.#multiSaveSectionCache;
+  }
+
+  /**
+   * The name the primary activity takes on a multi-mode feature, or null to leave it unnamed.
+   * Only set where the primary IS the first section - an attack describes something else.
+   */
+  get #primaryActivityName(): string | null {
+    if (this.isLegendaryResistance) return "Expend Use";
+    if (!(this.isSave && !this.isAttack)) return null;
+    const first = this.multiSaveSections[0];
+    if (!first) return null;
+    const name = DDBActivityFactoryMixin.multiSaveActivityName(first.slice.rawLabel);
+    // a lair block labels its first section with the feature's own name; restating it says nothing
+    if (!name || DDBDescriptions.normalizeSectionLabel(name) === DDBDescriptions.normalizeSectionLabel(this.name)) {
+      return null;
+    }
+    return name;
+  }
+
+  /**
+   * On a multi-mode feature the primary describes the first section, so it needs that section's
+   * text for the same reason its siblings do - otherwise its card shows every mode.
+   */
+  get #primaryActivityOptions(): IDDBActivityBuild {
+    if (!(this.isSave && !this.isAttack)) return {};
+    const first = this.multiSaveSections[0];
+    if (!first) return {};
+    return {
+      data: { description: { value: first.slice.section } },
+      targetOverride: this.#sectionTarget(first.slice.section),
+    };
+  }
+
+  /**
+   * The target of one mode of a multi-mode feature, read from its own section.
+   *
+   * Always returns a target: for a monster, "inherit" would mean the target regexed from the
+   * whole feature.
+   * A section names a save by construction, so a section that names no target defaults to a
+   * creature.
+   * That also overrides the "self" a healing feature's templateless target defaults to a save mode
+   * of a feature that elsewhere heals (Nymph's Gaze, Serpent Surprise) is still rolled by someone else.
+   */
+  #sectionTarget(section: string): I5eActivityTarget {
+    const target = this.getTarget({ text: utils.stripHtml(section).trim(), mutateRange: false });
+    if (target.affects && (!target.affects.type || target.affects.type === "self")) target.affects.type = "creature";
+    return target;
+  }
+
+  /**
+   * Build one save activity per mode of a feature whose text describes several.
+   *
+   * `featureBasics` reads only the first save, so on a swallow or an eye ray table everything
+   * past it existed only in the description. The first section is skipped only when the primary
+   * activity IS that save; where the primary is an attack, every section becomes an extra and
+   * the generic "Save" activity is suppressed in favour of the named ones.
+   */
+  #generateMultiSaveActivities(): void {
+    this._multiSaveActivityGeneration({
+      text: this.html,
+      primarySave: this.descriptionSave,
+      skipFirstSection: this.isSave && !this.isAttack,
+      targetOverrideForSection: (section) => this.#sectionTarget(section),
+    });
+  }
+
+  #addSaveAdditionalActivity(includeBase = false) {
+    const parts = this.templateType !== "weapon" || includeBase
+      ? this.actionData.damageParts.map((dp) => dp.part)
+      : this.actionData.damageParts.slice(1).map((dp) => dp.part);
+
+    this.additionalActivities.push({
+      name: "Save",
+      type: "save",
+      options: {
+        generateDamage: this.actionData.saveParts.length > 0,
+        damageParts: this.actionData.saveParts ?? parts,
+        includeBaseDamage: false,
+        // the save follows a hit with the attack, which has already spent the use
+        generateConsumption: false,
+      },
+    });
+  }
+
+  #addHealAdditionalActivities() {
+    // Healing that rides on a save or attack is part of that use, which the primary activity has
+    // already spent. Where the feature only heals there is no primary, and the heal spends it.
+    const ridesOnPrimary = Object.keys(this.data.system.activities ?? {}).length > 0;
+    for (const part of this.actionData.healingParts) {
+      const data = {
+        name: "Heal",
+        type: "heal",
+        options: {
+          generateDamage: false,
+          includeBaseDamage: false,
+          generateHealing: true,
+          healingPart: part.part,
+          ...(ridesOnPrimary ? { generateConsumption: false } : {}),
+        },
+      } as IAdditionalActivityOutline;
+      this.additionalActivities.push(data);
+    }
+  }
+
+  #determineLegendaryActionTypeFallback() {
+    // legendary actions are a special case and need an action to be marked as a legendary feature
+    if (this.type === "legendary") return "utility";
+    return null;
+  }
+
+  /**
+   * Every printing of the trait, with or without a "(3/Day, or 4/Day in Lair)" style suffix
+   * (one third-party block pluralises it). The per-day count itself is read by the factory into
+   * the legres resource.
+   */
+  get isLegendaryResistance(): boolean {
+    return (/^Legendary Resistances?\b/i).test(this.name);
+  }
+
+  override _getActivitiesType() {
+    // lets see if we have a save stat for things like Dragon born Breath Weapon
+    if (this.name === "Legendary Actions") return null;
+    // The trait has no uses of its own (the count lives on the actor resource), which would
+    // otherwise drop it through the special-with-no-uses gate below with no activity to spend one.
+    if (this.isLegendaryResistance) return "utility";
+    if (this.healingAction) {
+      if (!this.isAttack && !this.isSave && this.actionData.damageParts.length === 0) {
+        // we generate heal activities as additionals;
+        return this.#determineLegendaryActionTypeFallback();
+      }
+    }
+    if (this.isAttack) {
+      // some attacks will have a save and attack
+      // console.warn("isAttack", this.isAttack, this.isSave);
+      if (this.isSave) {
+        // a multi-mode feature already has one named save activity per section
+        if (this.multiSaveSections.length === 0) this.#addSaveAdditionalActivity();
+      }
+      return "attack";
+    }
+    if (this.isSave) return "save";
+    if (this.actionData.damageParts.length > 0) return "damage";
+    // we generate heal activities as additionals;
+    if (!this.healingAction && this.actionData.healingParts.length > 0) return null;
+    if (this.actionData.activation.type === "special" && !this.actionData.uses.max) {
+      return this.#determineLegendaryActionTypeFallback();
+    }
+    if (this.actionData.activation.type && !this.healingAction) return "utility";
+    // legendary actions are a special case and need an action to be marked as a legendary feature
+    if (this.type === "legendary") return "utility";
+    return this.#determineLegendaryActionTypeFallback();
+  }
+
+  _generateAutoEffects({ html, addToMonster = true }: { html: string; addToMonster?: boolean }) {
+    const flags: IItemFlagConfig & { ddbimporter: NonNullable<IItemFlagConfig["ddbimporter"]> } = {
+      ddbimporter: {},
+    };
+
+    if (this.isAttack && this.isSave) {
+      flags.ddbimporter.activityMatch = "Save";
+    }
+
+    const overtimeGenerator = new Effects.MidiOverTimeEffect({
+      document: this.data,
+      actor: this.ddbMonster.npc,
+      otherDescription: html,
+      flags,
+      addToMonster,
+    });
+
+    const deps = Effects.AutoEffects.effectModules();
+    if (!deps.hasCore || !this.ddbMonster.addMonsterEffects) {
+      logger.debug(`Adding Condition Effects to ${this.name}`);
+      overtimeGenerator.generateConditionOnlyEffect();
+    } else if (this.ddbMonster.addMonsterEffects) {
+      logger.debug(`Adding Over Time Effects to ${this.name}`);
+      overtimeGenerator.generateOverTimeEffect();
+    }
+    return overtimeGenerator;
+  }
+
+  async _generateEffects() {
+    this._generateAutoEffects({ html: this.strippedHtml });
+
+    if (this.enricher.clearAutoEffects) this.data.effects = [];
+    const effects = await this.enricher.createEffects();
+    this.data.effects ??= [];
+    this.data.effects.push(...effects);
+    this.enricher.createDefaultEffects();
+
+    // Named effect hints can still refer to the former parser-generated versatile activity.
+    if (this.ddbMonsterDamage.replacesVersatile && this.ddbMonsterDamage.damageModes.length) {
+      const name = this.ddbMonsterDamage.damageModes[0].name;
+      for (const effect of this.data.effects) {
+        if (foundry.utils.getProperty(effect, "flags.ddbimporter.activityMatch") === "Versatile") {
+          foundry.utils.setProperty(effect, "flags.ddbimporter.activityMatch", name);
+        }
+        const matches = foundry.utils.getProperty(effect, "flags.ddbimporter.activitiesMatch") as string[] | undefined;
+        if (matches?.includes("Versatile")) {
+          foundry.utils.setProperty(effect, "flags.ddbimporter.activitiesMatch", matches.map((match) => match === "Versatile" ? name : match));
+        }
+      }
+    }
+    this._activityEffectLinking();
+    this.#scopeDamageModeEffects();
+    this._activityBehaviorNaming();
+
+    Effects.AutoEffects.forceDocumentEffect(this.data);
+  }
+
+  /** Filter only attack links; saves and independent follow-up activities keep their own riders. */
+  #scopeDamageModeEffects() {
+    const damage = this.ddbMonsterDamage;
+    if (!damage.damageModes.length) return;
+    const normalStatuses = monsterDamageAppliedStatuses(damage.normalHit);
+    const primary = Object.values(this.data.system.activities).find((activity) => activity.type === "attack");
+    const removeStatuses = (activity: I5eActivity, statuses: Set<string>) => {
+      activity.effects = activity.effects?.filter((link) => {
+        const effect = this.data.effects?.find((candidate) => candidate._id === link._id);
+        return !Array.from(effect?.statuses ?? []).some((status) => statuses.has(status.toLowerCase()));
+      });
+    };
+    for (const mode of damage.damageModes) {
+      const conditionalStatuses = monsterDamageAppliedStatuses(mode.text);
+      const onlyConditional = new Set([...conditionalStatuses].filter((status) => !normalStatuses.has(status)));
+      if (primary) removeStatuses(primary, onlyConditional);
+      const variant = Object.values(this.data.system.activities).find((activity) => activity.type === "attack" && activity.name === mode.name);
+      if (!variant) continue;
+      // Already-affected targets receive the extra damage instead of reapplying the condition.
+      if ((/\balready\b/i).test(mode.condition)) {
+        const existing = new Set([...normalStatuses].filter((status) => new RegExp(`\\b${status}\\b`, "i").test(mode.condition)));
+        removeStatuses(variant, existing);
+      }
+    }
+  }
+
+  #getSpellcastingData(): IMonsterSpellcastingData {
+    const result: IMonsterSpellcastingData = {
+      dc: null,
+      ability: null, // ability associated
+      material: true,
+      innateMatch: false,
+      concentration: true,
+      innate: false,
+    };
+
+    const abilitySearch = /((?:spellcasting ability) (?:is|uses|using) (\w+)| (\w+)(?: as \w+ spellcasting ability))/;
+    const abilityMatch = this.strippedHtml.match(abilitySearch);
+    if (abilityMatch) {
+      const ability = abilityMatch[2] ?? abilityMatch[3];
+      result.ability = ability.toLowerCase().substring(0, 3);
+    }
+
+    const dcSearch = /spell\s+save\s+DC\s*(\d+)(?:,|\)|\s)/i;
+    const dcMatch = this.strippedHtml.match(dcSearch);
+    if (dcMatch) {
+      result.dc = parseInt(dcMatch[1]);
+    }
+
+    const noMaterialSearch = new RegExp(/no material component|no component|no spell components/);
+    const noMaterialMatch = noMaterialSearch.test(this.strippedHtml);
+    if (noMaterialMatch) {
+      result.material = false;
+    }
+
+    const noConcentrationSearch = new RegExp(/no concentration|no material components or concentration|no spell components or concentration/);
+    const noConcentrationMatch = noConcentrationSearch.test(this.strippedHtml);
+    if (noConcentrationMatch) {
+      result.concentration = false;
+    }
+
+    if (this.originalName.startsWith("Innate Spellcasting")) {
+      result.innate = true;
+    }
+
+    return result;
+  }
+
+  #generateSpellcastingData() {
+    this.spellCastingData = this.#getSpellcastingData();
+  }
+
+  async #getCastSpellActivitySpellData(spellData: IMonsterSpellcastingSpell, compendiumSpell: any) {
+    const spellOverride: I5eActivitySpell & {
+      properties: NonNullable<I5eActivitySpell["properties"]>;
+      challenge: NonNullable<I5eActivitySpell["challenge"]>;
+    } = {
+      uuid: compendiumSpell.uuid,
+      properties: [],
+      level: null,
+      challenge: {
+        attack: undefined,
+        save: undefined,
+        override: false,
+      },
+      spellbook: true,
+    };
+
+    const consumptionOverride: I5eActivityConsumption & { targets: I5eConsumptionTarget[] } = {
+      spellSlot: false,
+      targets: [],
+      scaling: {
+        allowed: false,
+        max: "",
+      },
+    };
+
+    const usesOverride: I5eSystemLimitedUses & { recovery: I5eSystemLimitedUsesRecovery[] } = {
+      spent: null,
+      recovery: [],
+      max: "",
+    };
+
+    let generateActivityUses = false;
+    let generateConsumption = false;
+
+    if (!this.spellCastingData.concentration || spellData.noConcentration)
+      spellOverride.properties.push("concentration");
+    if (!this.spellCastingData.material) spellOverride.properties.push("material");
+    if (spellData.level) spellOverride.level = parseInt(spellData.level);
+
+    if (spellData.consumeType || spellData.period) {
+      generateConsumption = true;
+      consumptionOverride.targets.push({
+        type: spellData.consumeType ?? "activityUses",
+        value: "1",
+        scaling: {},
+      });
+    }
+
+    if (this.type === "legendary") {
+      generateConsumption = true;
+      consumptionOverride.targets.push({
+        type: "attribute",
+        value: "1",
+        target: "resources.legact.value",
+        scaling: {},
+      });
+    }
+
+    if (spellData.period) {
+      generateActivityUses = true;
+      usesOverride.spent = 0;
+      usesOverride.max = spellData.quantity ? `${spellData.quantity}` : "1";
+      const resetType = DICTIONARY.resets.find((reset) =>
+        reset.id == spellData.period,
+      )?.value ?? "lr";
+      usesOverride.recovery.push({
+        period: resetType,
+        type: "recoverAll",
+      });
+    }
+
+    if (this.spellCastingData.ability
+      && this.spellCastingData.ability !== this.ddbMonster.npc.system.attributes?.spellcasting
+    ) {
+      spellOverride.ability = this.spellCastingData.ability;
+    }
+
+    if (this.spellCastingData.dc
+      && parseInt(String(this.spellCastingData.dc)) !== parseInt(String(this.ddbMonster.spellcasting.spelldc))
+    ) {
+      spellOverride.challenge.override = true;
+      spellOverride.challenge.save = String(this.spellCastingData.dc);
+    }
+
+    const options = {
+      spellOverride,
+      generateConsumption: generateConsumption,
+      generateUses: generateActivityUses,
+      usesOverride,
+      consumptionOverride,
+      generateTarget: spellData.targetSelf ?? undefined,
+    };
+
+    const activity = this._getCastActivity({
+      name: spellData.extra ? `${spellData.name} (${spellData.extra})` : spellData.name,
+    }, options);
+
+    if (spellData.targetSelf) {
+      activity.data.target.override = true;
+      activity.data.target.affects.type = "self";
+    }
+
+    if (spellData.duration) {
+      activity.data.duration = foundry.utils.mergeObject((activity.data.duration ?? {}), spellData.duration);
+      activity.data.duration.override = true;
+    }
+
+    await this.enricher.customFunction({
+      name: spellData.name,
+      activity: activity,
+    });
+
+    if (!("activation" in this.data.system)) {
+      activity.data.activation.override = true;
+    }
+
+    activity.img = compendiumSpell.img;
+
+    // console.warn("spell activite", {
+    //   activity,
+    //   spellData,
+    //   compendiumSpell,
+    //   options,
+    // });
+
+
+    this.activities.push(activity);
+    foundry.utils.setProperty(this.data, `system.activities.${activity.data._id}`, activity.data);
+
+  }
+
+  #getSpellcastingSpells() {
+    const html = this.html
+      .replace("Illusionbr/&gt; ", "Illusion</p><p> ") // faerie dragon parsing issue
+      .replaceAll(/<br>/g, "</p><p>")
+      .replaceAll(/<br \/>/g, "</p><p>");
+
+    const dom = utils.htmlToDocumentFragment(html);
+
+    dom.childNodes.forEach((node) => {
+      if (node.textContent == "\n") {
+        dom.removeChild(node);
+      }
+    });
+
+    const spells: IDDBParsedMonsterSpell[] = [];
+
+    dom.childNodes.forEach((node) => {
+      const spellText = utils.nameString(node.textContent ?? "");
+      const trimmedText = spellText.trim();
+      const spellData = DDBDescriptions.parseOutMonsterSpells(trimmedText);
+      spells.push(...spellData);
+    });
+
+    logger.debug(`${this.ddbMonster.name}: ${this.name}: Parsed spellcasting spells`, {
+      spells,
+    });
+
+    return spells;
+  }
+
+  async #retrieveCompendiumSpells(spellNames: string[]) {
+    return CompendiumHelper.retrieveCompendiumSpellReferences(spellNames, {
+      use2024Spells: this.use2024Spells,
+    });
+  }
+
+
+  // spell = {
+  //   name: "Fireball", //required
+  //   level: "5", // optional
+  //   extra: null, // extra to append to name string
+  //   period: "Day", // reset timeframe
+  //   quantity: "2"  // quantity available per period
+  //   consumeType: "itemUses",// defaults to activity uses
+  //   targetSelf: true,
+  //   noComponents: true,
+  //   duration: {},
+  // }
+  async #buildSpellcastingActivities(spells: IMonsterSpellcastingSpell[]) {
+
+    const compendiumSpellsIndex: ICompendiumLookup[] = await this.#retrieveCompendiumSpells(spells.map((spell) => spell.name));
+
+    for (const spell of spells) {
+      const entry = compendiumSpellsIndex.find((i) => i.name.toLowerCase() === spell.name.toLowerCase()
+        || i.flags?.ddbimporter?.originalName.toLowerCase() === spell.name.toLowerCase()
+        || i.name.toLowerCase() === spell.name.split(";")[0].trim().toLowerCase(),
+      );
+      if (!entry) {
+        logger.error(`Unable to find spell ${spell.name} for monster: "${this.ddbMonster.name}" (feature: "${this.originalName}"), have you munched spells?`, {
+          spell,
+          this: this,
+          spells,
+        });
+        continue;
+      }
+      this.#getCastSpellActivitySpellData(spell, entry);
+    }
+  }
+
+  /**
+   * Extract the spells a non-Spellcasting feature casts, e.g. "The archmage casts Fireball, Ice Storm, or
+   * Lightning Bolt twice in any combination, using the same spellcasting ability as Spellcasting." The
+   * optional `count` group ("twice", "three times", "... in any combination") sits between the spell list
+   * and the ability clause so it is not swallowed into the last spell name. A cast count has no home on a
+   * dnd5e cast activity; the parent feature's recharge/uses already gate the action.
+   */
+  getOtherCastSpells(): IMonsterSpellcastingSpell[] {
+    const basicRegex = /The (?:.*) casts(?: the)? (?<spells>.*?)(?<count> (?:twice|thrice|(?:two|three|four|five|\d+) times)(?: in any combination)?)?(?: spell| on that creature)?(?<self>on itself)?(?: in response to (?:the|that) spell’s trigger)?, (?<components>requiring no (?:spell|spellcasting|material) components and )?using (?:the same spellcasting ability as (?:its )?[^.,(]+|(?<ability>\w+) as the spellcasting ability)/i;
+    const basicMatch = this.strippedHtml.match(basicRegex);
+
+    const useRegex = /The (?:.*) uses Spellcasting to cast (?<spells>.*?)(?<self> on itself)?(?:, and it can|\.)/i;
+    const useMatch = this.strippedHtml.match(useRegex);
+    const canCastRegex = /the (?:.*) can cast one of the following spells, (?:.*): (?<spells>.*?)\./i;
+    const canCastMatch = this.strippedHtml.match(canCastRegex);
+
+    const lairRegex = /While in its lair, the (?:.*) can cast (?<spells>.*?), (?<components>requiring no (?:spell|spellcasting|material) components and )?using the same spellcasting ability as its Spellcasting action./i;
+    const lairMatch = this.strippedHtml.match(lairRegex);
+
+    const matches = basicMatch ?? useMatch ?? canCastMatch ?? lairMatch;
+    const spells: IMonsterSpellcastingSpell[] = [];
+    const matchGroups = matches?.groups;
+    if (!matchGroups) return spells;
+
+    const perUseRegex = /The (?:.*) must finish a (\w+) Rest before using this trait to cast that spell again/i;
+    const perUseMatch = this.strippedHtml.match(perUseRegex);
+
+    const names = DDBDescriptions
+      .splitStringByComma(matchGroups.spells.replace(", or ", ", ").replace(" or ", ", "))
+      .filter((n) => n.trim() !== "");
+    for (const name of names) {
+      // parenthetical qualifiers such as "(level 5 version)" or "(self only)" are parsed the same way
+      // as the Spellcasting block path so the compendium lookup sees the bare spell name
+      const entry = DDBDescriptions.parseMonsterSpellEntry(name);
+      const spell: IMonsterSpellcastingSpell = {
+        name: entry.name,
+      };
+
+      if (entry.level) spell.level = entry.level;
+      if (entry.extra) spell.extra = entry.extra;
+      if (entry.targetSelf) spell.targetSelf = true;
+      if (entry.duration) spell.duration = entry.duration;
+
+      if (matchGroups.self) {
+        spell.extra = "on itself";
+        spell.targetSelf = true;
+      }
+      if (matchGroups.components) {
+        spell.noComponents = true;
+      }
+
+      if (matchGroups.ability) {
+        spell.ability = matchGroups.ability;
+      }
+
+      if (perUseMatch) {
+        spell.period = perUseMatch[1].trim();
+        spell.quantity = "1";
+        spell.consumeType = "activityUses";
+      } else if (this.data.system.uses.max) {
+        spell.consumeType = "itemUses";
+        spell.quantity = "1";
+      }
+      spells.push(spell);
+    }
+
+    logger.verbose(`${this.ddbMonster.name}: ${this.name}: Parsed cast spells`, {
+      spells,
+      count: matchGroups.count?.trim() ?? null,
+    });
+
+    return spells;
+  }
+
+  async #buildOtherSpellActivities() {
+    const spells = this.getOtherCastSpells();
+    if (spells.length > 0) {
+      await this.#buildSpellcastingActivities(spells);
+    }
+  }
+
+  async #handleSpellCasting() {
+    if (!this.useCastActivity) return;
+    if (this.name === "Legendary Actions") return;
+    this.#generateSpellcastingData();
+
+    const spellcastingMatch = this.originalName.startsWith("Spellcasting")
+      || this.originalName.startsWith("Innate Spellcasting");
+
+    if (spellcastingMatch) {
+      // parsed spells use null for a missing duration; the spellcasting shape wants it absent
+      const spells = this.#getSpellcastingSpells()
+        .map((spell): IMonsterSpellcastingSpell => ({ ...spell, duration: spell.duration ?? undefined }));
+      await this.#buildSpellcastingActivities(spells);
+    } else {
+      await this.#buildOtherSpellActivities();
+    }
+
+    if (Object.keys(this.data.system.activities).length > 0) {
+      this.ignoreActivityGeneration = true;
+      if (spellcastingMatch) {
+        this.data.system.uses = {
+          spent: null,
+          recovery: [],
+          max: "",
+        };
+      }
+    }
+
+  }
+
+  flagCleanup() {
+    delete this.data.flags.ddbimporter?.defaultAdditionalActivities;
+    delete this.data.flags.monsterMunch?.description;
+    if (this.stripFlagData) {
+      delete this.data.flags.monsterMunch?.actionData;
+    }
+  }
+
+  async parse() {
+
+    await this.enricher.init();
+
+    this.#generateActionData();
+    switch (this.type) {
+      case "action":
+      case "mythic":
+      case "reaction":
+      case "bonus":
+        this.#buildAction();
+        break;
+      case "lair":
+        this.#buildLair();
+        break;
+      case "legendary":
+        this.#buildLegendary();
+        break;
+      case "villain":
+        this.#buildVillain();
+        break;
+      case "special":
+        this.#buildSpecial();
+        break;
+      default:
+        logger.error(`Unknown action parsing type ${this.type}`, { DDBFeature: this });
+        throw new Error(`Unknown action parsing type ${this.type}`);
+    }
+
+    // A feature with limited uses of its own spends one when used. Recharge sets this where its
+    // uses are read; "(1/Day)" and "Recharges after a Short or Long Rest" gave the item uses but
+    // no consumption, so the use was never spent. Every activity of the feature spends from the
+    // same pool, which is also what a conditional weapon attack wants in either mode. An at-will
+    // feature has no uses and must not acquire a target; Legendary Resistance and a legendary
+    // action's cost already carry their own.
+    if (this.data.system.uses?.max && !this.actionData.consumptionValue
+      && this.actionData.consumptionTargets.length === 0) {
+      this.actionData.consumptionValue = "1";
+    }
+
+    if (!this.actionCopy) {
+      await this.#handleSpellCasting();
+      this.#generateMultiSaveActivities();
+      await this._generateActivity({ name: this.#primaryActivityName }, this.#primaryActivityOptions);
+      this.#addHealAdditionalActivities();
+      this.#queueDamageModes();
+      if (this.enricher.addAutoAdditionalActivities)
+        await this._generateAdditionalActivities();
+      await this.enricher.addAdditionalActivities(this);
+      this._generateEffects();
+    }
+
+    foundry.utils.setProperty(this.data, "flags.monsterMunch.actionData.damage", this.actionData.damage);
+    foundry.utils.setProperty(this.data, "flags.monsterMunch.actionData.damageParts", this.actionData.damageParts);
+    foundry.utils.setProperty(this.data, "flags.monsterMunch.actionData.baseAbility", this.actionData.baseAbility);
+    foundry.utils.setProperty(this.data, "flags.monsterMunch.actionData.toHit", this.toHit);
+    foundry.utils.setProperty(this.data, "flags.monsterMunch.actionData.proficient", this.actionData.proficient);
+    foundry.utils.setProperty(this.data, "flags.monsterMunch.actionData.extraAttackBonus", this.actionData.extraAttackBonus);
+
+    if (this.levelBonus)
+      foundry.utils.setProperty(this.data, "flags.ddbimporter.levelBonus", true);
+    if (this.profBonus)
+      foundry.utils.setProperty(this.data, "flags.ddbimporter.profBonus", true);
+    await this.#generateDescription();
+
+    await this.enricher.addDocumentAdvancements();
+    await this.enricher.addDocumentOverride();
+    this.data.system.identifier = utils.referenceNameString(this.data.name.toLowerCase());
+
+    this.flagCleanup();
+
+    await this.enricher.cleanup();
+
+    logger.debug(`Parsed Feature ${this.name} for ${this.ddbMonster.name}`, { feature: this });
+
+  }
+
+}

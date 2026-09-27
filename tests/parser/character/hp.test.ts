@@ -1,0 +1,342 @@
+import DDBCharacter from "../../../src/parser/DDBCharacter";
+import "../../../src/parser/character/hp";
+import { makeMockCharacter } from "../../_fixtures/mockCharacter";
+
+// =============================================================================
+// _generateHitPoints
+// =============================================================================
+describe("DDBCharacter._generateHitPoints", () => {
+  const generateHP = DDBCharacter.prototype._generateHitPoints;
+
+  it("basic HP: level 1, CON 10, base 10", () => {
+    const mock = makeMockCharacter();
+    generateHP.call(mock);
+
+    // CON mod 0 × 1 level = 0, base 10 → HP = 10
+    expect(mock.raw.character.system.attributes.hp.value).toBe(10);
+    expect(mock.raw.character.system.attributes.hp.temp).toBe(0);
+    expect(mock.raw.character.system.attributes.hp.tempmax).toBe(0);
+  });
+
+  it("CON modifier adds to HP per level", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 30 },
+    });
+    // Set CON to 14 (mod +2), totalLevels to 5
+    mock.raw.character.flags.ddbimporter.dndbeyond.effectAbilities.con.value = 14;
+    mock.raw.character.flags.ddbimporter.dndbeyond.totalLevels = 5;
+
+    generateHP.call(mock);
+
+    // CON mod +2 × 5 levels = 10, base 30 → HP = 40
+    expect(mock.raw.character.system.attributes.hp.value).toBe(40);
+  });
+
+  it("bonus hit points (tempmax) are added to value", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 20, bonusHitPoints: 5 },
+    });
+    generateHP.call(mock);
+
+    // HP = 20 + 0 (con) + 5 (bonus) = 25
+    expect(mock.raw.character.system.attributes.hp.value).toBe(25);
+    expect(mock.raw.character.system.attributes.hp.tempmax).toBe(5);
+  });
+
+  it("removed hit points are subtracted from value", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 20, removedHitPoints: 7 },
+    });
+    generateHP.call(mock);
+
+    // HP = 20 - 7 = 13
+    expect(mock.raw.character.system.attributes.hp.value).toBe(13);
+  });
+
+  it("temporary hit points stored in temp", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 20, temporaryHitPoints: 8 },
+    });
+    generateHP.call(mock);
+
+    expect(mock.raw.character.system.attributes.hp.temp).toBe(8);
+    // value is not affected by temp HP
+    expect(mock.raw.character.system.attributes.hp.value).toBe(20);
+  });
+
+  it("override hit points replaces all calculation", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 50, overrideHitPoints: 100 },
+    });
+    mock.raw.character.flags.ddbimporter.dndbeyond.effectAbilities.con.value = 16;
+    mock.raw.character.flags.ddbimporter.dndbeyond.totalLevels = 10;
+
+    generateHP.call(mock);
+
+    // Override ignores base + CON
+    expect(mock.raw.character.system.attributes.hp.value).toBe(100);
+    expect(mock.raw.character.system.attributes.hp.max).toBe(100);
+  });
+
+  it("per-level bonus from Tough feat (no class match)", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: {
+        baseHitPoints: 20,
+        modifiers: {
+          class: [],
+          race: [],
+          background: [],
+          item: [],
+          feat: [
+            {
+              type: "bonus",
+              subType: "hit-points-per-level",
+              value: 2,
+              componentId: 500,
+              componentTypeId: 1,
+              restriction: "",
+              isGranted: true,
+            },
+          ],
+          condition: [],
+        },
+      },
+    });
+    mock.raw.character.flags.ddbimporter.dndbeyond.totalLevels = 5;
+
+    generateHP.call(mock);
+
+    // HP modifiers are in the "common" exclusion list, so only the
+    // includeExcludedEffects=true path picks them up.
+    // Tough: 2 × 5 levels = 10, base 20, CON 0 → HP = 30
+    expect(mock.raw.character.system.attributes.hp.value).toBe(30);
+  });
+
+  it("per-level bonus from class feature (class match)", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: {
+        baseHitPoints: 20,
+        classes: [
+          {
+            level: 3,
+            definition: { id: 1, name: "Fighter", classFeatures: [] },
+            subclassDefinition: null,
+            classFeatures: [
+              { definition: { id: 500, entityTypeId: 1, requiredLevel: 1 } },
+            ],
+            isStartingClass: true,
+          },
+        ],
+        modifiers: {
+          class: [
+            {
+              type: "bonus",
+              subType: "hit-points-per-level",
+              value: 1,
+              componentId: 500,
+              componentTypeId: 1,
+              restriction: "",
+              isGranted: true,
+            },
+          ],
+          race: [],
+          background: [],
+          item: [],
+          feat: [],
+          condition: [],
+        },
+        options: { class: [], race: [], feat: [] },
+        choices: { class: [] },
+        optionalClassFeatures: [],
+      },
+    });
+    mock.raw.character.flags.ddbimporter.dndbeyond.totalLevels = 5;
+
+    generateHP.call(mock);
+
+    // Class level = 3, so per-level bonus = 1 × 3 = 3
+    // base 20 + CON 0 + 3 = 23
+    expect(mock.raw.character.system.attributes.hp.value).toBe(23);
+  });
+
+  it("fixed hit-points bonus (not per-level)", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: {
+        baseHitPoints: 20,
+        modifiers: {
+          class: [],
+          race: [
+            {
+              type: "bonus",
+              subType: "hit-points",
+              value: 5,
+              componentId: 600,
+              componentTypeId: 1,
+              restriction: "",
+              isGranted: true,
+            },
+          ],
+          background: [],
+          item: [],
+          feat: [],
+          condition: [],
+        },
+      },
+    });
+
+    generateHP.call(mock);
+
+    // Fixed bonus picked up via includeExcludedEffects=true path
+    expect(mock.raw.character.flags.ddbimporter.fixedBonusHitPointValuesWithEffects).toBe(5);
+  });
+
+  it("ignores hit-points bonuses that carry only a healing die and no value", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: {
+        baseHitPoints: 103,
+        modifiers: {
+          class: [
+            {
+              type: "bonus",
+              subType: "hit-points",
+              value: null,
+              fixedValue: null,
+              dice: { diceCount: 1, diceValue: 4, diceMultiplier: null, fixedValue: null, diceString: "1d4" },
+              componentId: 601,
+              componentTypeId: 1,
+              restriction: "Whenever you use a Lvl. 1+ spell to restore HP",
+              isGranted: true,
+            },
+          ],
+          race: [
+            {
+              type: "bonus",
+              subType: "hit-points",
+              value: null,
+              fixedValue: 3,
+              componentId: 602,
+              componentTypeId: 1,
+              restriction: "",
+              isGranted: true,
+            },
+          ],
+          background: [],
+          item: [],
+          feat: [],
+          condition: [],
+        },
+      },
+    });
+    mock.raw.character.flags.ddbimporter.dndbeyond.effectAbilities.con.value = 13;
+    mock.raw.character.flags.ddbimporter.dndbeyond.totalLevels = 20;
+
+    generateHP.call(mock);
+
+    // 20 levels of +1 con, base 103, the 1d4 rider contributes nothing, the fixed 3 counts
+    expect(mock.raw.character.flags.ddbimporter.fixedBonusHitPointValuesWithEffects).toBe(3);
+    expect(mock.raw.character.flags.ddbimporter.totalHP).toBe(126);
+    expect(mock.raw.character.system.attributes.hp.value).toBe(123);
+  });
+
+  it("ignores a healing rider whose die carries a fixed part (Keoghtom's Ointment 2d8 + 2)", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: {
+        baseHitPoints: 10,
+        modifiers: {
+          class: [],
+          race: [],
+          background: [],
+          item: [],
+          feat: [
+            {
+              type: "bonus",
+              subType: "hit-points-per-level",
+              value: 2,
+              componentId: 1789206,
+              componentTypeId: 1088085227,
+              restriction: "",
+              isGranted: true,
+            },
+          ],
+          condition: [],
+        },
+        inventory: [
+          {
+            id: 749042808,
+            equipped: true,
+            isAttuned: false,
+            definition: {
+              id: 9228809,
+              name: "Keoghtom's Ointment",
+              canEquip: true,
+              canAttune: false,
+              isConsumable: false,
+              grantedModifiers: [
+                {
+                  type: "bonus",
+                  subType: "hit-points",
+                  value: null,
+                  fixedValue: 2,
+                  dice: { diceCount: 2, diceValue: 8, diceMultiplier: null, fixedValue: 2, diceString: "2d8 + 2" },
+                  componentId: 9228809,
+                  componentTypeId: 112130694,
+                  restriction: "",
+                  isGranted: true,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    mock.raw.character.flags.ddbimporter.dndbeyond.effectAbilities.con.value = 14;
+
+    generateHP.call(mock);
+
+    // 10 base + 2 con + 2 Tough; the ointment's fixed healing part does not raise the maximum
+    expect(mock.raw.character.flags.ddbimporter.fixedBonusHitPointValuesWithEffects).toBe(0);
+    expect(mock.raw.character.flags.ddbimporter.totalHP).toBe(14);
+    expect(mock.raw.character.system.attributes.hp.value).toBe(14);
+  });
+
+  it("stores metadata flags", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 25, removedHitPoints: 3 },
+    });
+    generateHP.call(mock);
+
+    expect(mock.raw.character.flags.ddbimporter.baseHitPoints).toBe(25);
+    expect(mock.raw.character.flags.ddbimporter.removedHitPoints).toBe(3);
+    expect(mock.raw.character.flags.ddbimporter.rolledHP).toBe(false);
+  });
+
+  it("rolled HP preference sets rolledHP flag", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 20, preferences: { hitPointType: 2 } },
+    });
+    generateHP.call(mock);
+
+    expect(mock.raw.character.flags.ddbimporter.rolledHP).toBe(true);
+  });
+
+  it("bonuses.level and bonuses.overall empty when no per-level modifiers", () => {
+    const mock = makeMockCharacter({ ddbCharacter: { baseHitPoints: 15 } });
+    generateHP.call(mock);
+
+    expect(mock.raw.character.system.attributes.hp.bonuses.level).toBe("");
+    expect(mock.raw.character.system.attributes.hp.bonuses.overall).toBe("");
+  });
+
+  it("negative CON modifier reduces HP", () => {
+    const mock = makeMockCharacter({
+      ddbCharacter: { baseHitPoints: 10 },
+    });
+    mock.raw.character.flags.ddbimporter.dndbeyond.effectAbilities.con.value = 8;
+    mock.raw.character.flags.ddbimporter.dndbeyond.totalLevels = 3;
+
+    generateHP.call(mock);
+
+    // CON mod -1 × 3 = -3, base 10 → HP = 7
+    expect(mock.raw.character.system.attributes.hp.value).toBe(7);
+  });
+});

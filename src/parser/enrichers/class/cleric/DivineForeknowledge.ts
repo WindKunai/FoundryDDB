@@ -1,0 +1,79 @@
+import { DICTIONARY } from "../../../../config/_module";
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class DivineForeknowledge extends DDBEnricherData {
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Divine Foreknowledge",
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Spend Spell Slot to Restore Use",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateConsumption: true,
+          generateTarget: true,
+          generateActivation: true,
+          generateUtility: true,
+          activationOverride: {
+            type: "none",
+            value: null,
+            condition: "",
+          },
+          consumptionOverride: {
+            scaling: { allowed: true, max: "4" },
+            targets: [
+              {
+                type: "itemUses",
+                target: "",
+                value: -1,
+                scaling: { mode: "", formula: "" },
+              },
+              {
+                type: "spellSlots",
+                value: "1",
+                target: "6",
+                scaling: { mode: "level", formula: "" },
+              },
+            ],
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    const changes = [
+      DDBEnricherData.ChangeHelper.advantageDeathSaveChange(),
+    ];
+
+    DICTIONARY.actor.abilities.forEach((ability) => {
+      changes.push(
+        DDBEnricherData.ChangeHelper.disadvantageAbilityCheckChange(ability.value),
+        DDBEnricherData.ChangeHelper.disadvantageAbilitySaveChange(ability.value),
+      );
+    });
+    return [
+      {
+        changes,
+        options: {
+          durationSeconds: 3600,
+        },
+      },
+    ];
+  }
+
+  // DDB ships no action (and so no limited use) for this feature; the activities consume item uses, which need a max
+  override get override(): IDDBOverrideData {
+    return {
+      uses: { spent: null, max: "1", recovery: [{ period: "lr", type: "recoverAll", formula: undefined }] },
+    };
+  }
+
+}

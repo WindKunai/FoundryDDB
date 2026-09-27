@@ -1,0 +1,951 @@
+import logger from "./Logger";
+import utils from "./Utils";
+import CompendiumHelper from "./CompendiumHelper";
+import DDBEffectImporter from "./DDBEffectImporter";
+import Iconizer from "./Iconizer";
+import { DDBCompendiumFolders } from "./DDBCompendiumFolders";
+import NameMatcher from "./NameMatcher";
+import DocumentFlags from "./DocumentFlags";
+import { DICTIONARY, SETTINGS } from "../config/_module";
+
+interface IDDBItemImporterOptions {
+  matchFlags?: string[];
+  matchFields?: string[];
+  deleteBeforeUpdate?: boolean | null;
+  indexFilter?: CompendiumCollection.GetIndexOptions | null;
+  useCompendiumFolders?: boolean | null;
+  recursive?: boolean | null;
+  notifier?: NotifierV1 | null;
+  notifierV2?: INotifierV2 | null;
+}
+
+interface IDDBItemImporterLoadPassedItemsFromCompendiumOptions extends IDDBItemImporterGetCompendiumItemsOptions {
+  indexFilter?: CompendiumCollection.GetIndexOptions;
+  overrideId?: boolean;
+}
+
+interface IDDBItemImporterGetCompendiumItemsOptions {
+  looseMatch?: boolean;
+  monsterMatch?: boolean;
+  keepId?: boolean;
+  deleteCompendiumId?: boolean;
+  keepDDBId?: boolean;
+  linkItemFlags?: boolean;
+  /**
+   * Originals that find no candidate under the strict matchFlags/matchFields filter (e.g. a 2014
+   * monster looking for "Plate" when the shared DDB item was only munched as 2024) get a second,
+   * relaxed pass that ignores those filters. Only unmatched originals are retried, so a preferred
+   * version copy always wins and no duplicates are produced.
+   */
+  rulesFallback?: boolean;
+}
+
+type TDDBImporterTypes = "items"
+  | "spells"
+  | "feats"
+  | "background"
+  | "race"
+  | "subclass"
+  | "class"
+  | "monsters"
+  | "vehicles"
+  | "tables"
+  | "custom"
+  | "trait"
+  | "inventory"
+  | "features"
+  | "summons";
+
+type TIndexEntry = CompendiumCollection.IndexEntry<CompendiumCollection.DocumentName>;
+
+type TFlagType = TDDBItemImporterDocument | TIndexEntry;
+
+// FVTT create/update calls can resolve to null/undefined (e.g. an update with no diff)
+type TImportedDocumentResult = Item.Implementation | RollTable.Implementation | null | undefined;
+
+export default class DDBItemImporter<TType extends TDDBItemImporterDocument = TDDBItemImporterDocument> {
+
+  static DEFAULT_INDEX_FILTER: Record<string, any> = {
+    fields: [
+      "name",
+      "flags.ddbimporter.is2014",
+      "flags.ddbimporter.is2024",
+      "flags.ddbimporter.dndbeyond.alternativeNames",
+    ],
+  } as CompendiumCollection.GetIndexOptions;
+
+  useCompendiumFolders: boolean;
+  matchFlags: string[];
+  matchFields: string[];
+  compendium: CompendiumCollection<any>;
+  compendiumIndex: IndexTypeForMetadata<CompendiumCollection.DocumentName> | null;
+  indexFilter: Record<string, any>; // { fields?: string[]; };
+  results: any[];
+  deleteBeforeUpdate: boolean;
+  deleteAllBeforeUpdate: boolean;
+  notifier: NotifierV1;
+  notifierV2: INotifierV2 | null;
+  totalDocuments: number;
+  currentDocumentCount: number;
+  compendiumFolders: DDBCompendiumFolders;
+  srdImageLibrary2014: ICompendiumIconMapEntry[] | null = null;
+  srdImageLibrary2024: ICompendiumIconMapEntry[] | null = null;
+  _documents: TType[];
+  type: TDDBImporterTypes;
+  recursive: boolean | null;
+
+  constructor(type: TDDBImporterTypes, documents: TType[], {
+    matchFlags = [],
+    matchFields = [],
+    deleteBeforeUpdate = null,
+    indexFilter = null,
+    useCompendiumFolders = null,
+    recursive = null,
+    notifier = null,
+    notifierV2 = null,
+  }: IDDBItemImporterOptions = {}) {
+    this.type = type;
+    this._documents = documents;
+    this.useCompendiumFolders = useCompendiumFolders ?? true;
+    this.matchFlags = matchFlags;
+    this.matchFields = matchFields;
+    this.recursive = recursive;
+
+    const compendium = CompendiumHelper.getCompendiumType(this.type);
+    if (!compendium) throw new Error(`Unable to load compendium for type "${this.type}"`);
+    this.compendium = compendium;
+    this.compendium.configure({ locked: false });
+    this.compendiumIndex = null;
+    this.indexFilter = indexFilter ?? DDBItemImporter.DEFAULT_INDEX_FILTER;
+
+    this.results = [];
+
+    this.deleteBeforeUpdate = deleteBeforeUpdate ?? utils.getSetting<boolean>("munching-policy-delete-during-update");
+    this.deleteAllBeforeUpdate = foundry.utils.getProperty(CONFIG, "DDBI.DEV.deleteAllBeforeUpdate") as boolean ?? false;
+    this.notifier = notifier ?? ((note, { nameField = false, monsterNote = false } = {}) => {
+      logger.info(note, { nameField, monsterNote });
+    });
+    this.notifierV2 = notifierV2;
+    this.totalDocuments = this._documents?.length ?? 0;
+    this.currentDocumentCount = 0;
+
+    this.compendiumFolders = new DDBCompendiumFolders(this.type);
+  }
+
+  get documents(): TType[] {
+    return this._documents;
+  }
+
+  set documents(docs: TType[]) {
+    this._documents = docs;
+    this.totalDocuments = this._documents?.length ?? 0;
+  }
+
+  async buildIndex(indexFilter: CompendiumCollection.GetIndexOptions = {}) {
+    const flagSet = new Set<string>(indexFilter.fields ?? []);
+    const hasDDBImporterFlags = [...flagSet].some((f) => f.startsWith("flags.ddbimporter"));
+    if (!hasDDBImporterFlags) {
+      for (const flagMatch of this.matchFlags) {
+        flagSet.add(`flags.ddbimporter.${flagMatch}`);
+      }
+    }
+    this.indexFilter = indexFilter;
+    this.indexFilter.fields = CompendiumHelper.safeIndexFields(this.compendium, Array.from(flagSet)) as CompendiumCollection.GetIndexOptions["fields"];
+    this.compendiumIndex = await this.compendium.getIndex(this.indexFilter);
+  }
+
+  async init() {
+    await this.buildIndex(this.indexFilter);
+  }
+
+  async _buildSRDLibrary() {
+    if (!this.srdImageLibrary2014) this.srdImageLibrary2014 = await Iconizer.getSRDImageLibrary("2014");
+    if (!this.srdImageLibrary2024) this.srdImageLibrary2024 = await Iconizer.getSRDImageLibrary("2024");
+  }
+
+  #flagMatch(item1: TFlagType, item2: TDDBItemImporterDocument): boolean {
+    if (this.matchFlags.length === 0) return true;
+    // let fs = {};
+    const matched = this.matchFlags.every((flag) => {
+      // assume 2014 rule if this is the flag request
+      const defaultFlagValue = flag === "is2014" ? true : undefined;
+      const flagValue1 = foundry.utils.getProperty(item1, `flags.ddbimporter.${flag}`) ?? defaultFlagValue;
+      if (flagValue1 === undefined) return false;
+      const flagValue2 = foundry.utils.getProperty(item2, `flags.ddbimporter.${flag}`) ?? defaultFlagValue;
+      if (flagValue2 === undefined) return false;
+      // fs[flag] = { item1: flagValue1, item2: flagValue2, bool: flagValue1 === flagValue2 };
+      return flagValue1 === flagValue2;
+    });
+    // if (item1.name === "Fey Ancestry") {
+    //   console.warn("flagMatch", {
+    //     item1,
+    //     item2,
+    //     matched,
+    //     fs,
+    //   });
+    // }
+    return matched;
+  }
+
+  #fieldMatch(item1: TFlagType, item2: TDDBItemImporterDocument): boolean {
+    if (this.matchFields.length === 0) return true;
+    const matched = this.matchFields.every((field) => {
+      const fieldValue1 = foundry.utils.getProperty(item1, field);
+      const fieldValue2 = foundry.utils.getProperty(item2, field);
+      return fieldValue1 === fieldValue2;
+    });
+    return matched;
+  }
+
+  static copyFlagGroup(flagGroup: string, originalItem: Item.Implementation | Actor.Implementation | TImporterActor | TSyncCharacterActor, targetItem: TDDBItemImporterDocument) {
+    DocumentFlags.copyFlagGroup(flagGroup, originalItem, targetItem);
+  }
+
+  static copySupportedItemFlags(originalItem: Item.Implementation | Actor.Implementation | TImporterActor | TSyncCharacterActor, targetItem: TDDBItemImporterDocument) {
+    DocumentFlags.copySupportedItemFlags(originalItem, targetItem);
+  }
+
+
+  /**
+   * Take the source data of a document that may be live.
+   *
+   * A live Item's system.activities is an ActivityCollection (a Map subclass), so both
+   * keyed access and Object.values come back empty on it, and deep cloning one clones
+   * data models rather than data. Plain objects pass through untouched.
+   */
+  static sourceData<T>(document: T): T {
+    const toObject = (document as { toObject?: () => T } | undefined)?.toObject;
+    return typeof toObject === "function" ? toObject.call(document) : document;
+  }
+
+  /**
+   * Resolve a retain style flag for a matched item.
+   */
+  static retainFlagValue<T>(existingFlags: IDDBImporterFlags | undefined, item: TAll5eItemDocuments, flag: string): T | undefined {
+    const parsed = foundry.utils.getProperty(item, `flags.ddbimporter.${flag}`) as T | undefined;
+    if (parsed !== undefined && parsed !== null && parsed !== false) return parsed;
+    return foundry.utils.getProperty(existingFlags ?? {}, flag) as T | undefined;
+  }
+
+  static ACTOR_TYPES: readonly string[] = ["character", "npc", "vehicle"];
+
+  /**
+   * The importer also handles actor and roll table data; only item documents
+   * carry activities and the standalone effect stash.
+   */
+  static isItemDocument(document: TDDBItemImporterDocument): document is TAll5eItemDocuments {
+    return "system" in document
+      && typeof document.type === "string"
+      && !DDBItemImporter.ACTOR_TYPES.includes(document.type);
+  }
+
+  /**
+   * Copy activity level uses.spent over from the previously imported document.
+   *
+   * Independent of the item level retainUseSpent: an activity can carry its own uses
+   * pool while the item has none, and vice versa.
+   *
+   * Activity ids are generated deterministically from the activity name
+   * (utils.namedIDStub) so they normally survive a re-import, but an enricher renaming
+   * an activity changes its id, so fall back to matching on name rather than silently
+   * dropping the play state.
+   */
+  static restoreActivityUseSpent(existing: TAll5eItemDocuments, item: TAll5eItemDocuments, selection: boolean | string[]) {
+    const existingItem = DDBItemImporter.sourceData(existing);
+    if (!("activities" in item.system) || !("activities" in existingItem.system)) return;
+    const names = Array.isArray(selection) ? selection : null;
+    if (names && names.length === 0) return;
+
+    for (const activity of Object.values(item.system.activities)) {
+      if (names && !names.includes(activity.name ?? "")) continue;
+      // an activity with no max of its own has no meaningful spent value
+      const max = activity.uses?.max;
+      if (!activity.uses || max === undefined || max === null || `${max}`.trim() === "") continue;
+
+      const original = existingItem.system.activities[activity._id ?? ""]
+        ?? Object.values(existingItem.system.activities).find((existing) =>
+          Boolean(activity.name) && existing.name === activity.name,
+        );
+      const spent = original?.uses?.spent;
+      if (typeof spent !== "number") continue;
+
+      const literalMax = (/^\d+$/).test(`${max}`.trim())
+        ? Number.parseInt(`${max}`.trim())
+        : null;
+      activity.uses.spent = literalMax === null
+        ? Math.max(spent, 0)
+        : Math.min(Math.max(spent, 0), literalMax);
+      logger.debug(`Retaining activity uses for ${item.name}: ${activity.name} spent ${activity.uses.spent}`);
+    }
+  }
+
+  static updateCharacterItemFlags(itemData: TAll5eDocuments, replaceData: TAll5eDocuments): TAll5eDocuments {
+    if (itemData.flags?.ddbimporter?.importId) foundry.utils.setProperty(replaceData, "flags.ddbimporter.importId", itemData.flags.ddbimporter.importId);
+    const overrideIdMatch = foundry.utils.getProperty(itemData, "flags.ddbimporter.overrideId") === replaceData._id;
+    const customAdded = foundry.utils.getProperty(itemData, "flags.ddbimporter.ddbCustomAdded");
+    if (customAdded || overrideIdMatch) {
+      replaceData.name = itemData.name;
+      foundry.utils.setProperty(replaceData, "flags.ddbimporter.replacedId", itemData._id);
+    }
+    const isCustomItem = foundry.utils.getProperty(itemData, "flags.ddbimporter.isCustomItem");
+    if (customAdded || (isCustomItem && itemData.type === "loot")) return replaceData;
+
+    if ("quantity" in itemData.system && "quantity" in replaceData.system) replaceData.system.quantity = itemData.system.quantity;
+    if ("attuned" in itemData.system && "attuned" in replaceData.system) replaceData.system.attuned = itemData.system.attuned;
+    if ("attunement" in itemData.system && "attunement" in replaceData.system) replaceData.system.attunement = itemData.system.attunement;
+    if ("equipped" in itemData.system && "equipped" in replaceData.system) replaceData.system.equipped = itemData.system.equipped;
+    if ("method" in itemData.system && "method" in replaceData.system) replaceData.system.method = itemData.system.method;
+    if ("prepared" in itemData.system && "prepared" in replaceData.system) replaceData.system.prepared = itemData.system.prepared;
+    if (itemData.type === "spell" && "sourceItem" in itemData.system) {
+      foundry.utils.setProperty(replaceData, "system.sourceItem", itemData.system.sourceItem);
+    }
+    if ("proficient" in itemData.system && "proficient" in replaceData.system) replaceData.system.proficient = itemData.system.proficient;
+    if (!DICTIONARY.types.inventory.includes(itemData.type)) {
+      if ("uses" in itemData.system && "uses" in replaceData.system) replaceData.system.uses = itemData.system.uses;
+      if ("ability" in itemData.system && "ability" in replaceData.system) replaceData.system.ability = itemData.system.ability;
+    }
+    const retainActivitySpent = foundry.utils.getProperty(itemData, "flags.ddbimporter.retainActivityUseSpent") as boolean | string[] | undefined;
+    if (retainActivitySpent && "activities" in itemData.system && "activities" in replaceData.system) {
+      DDBItemImporter.restoreActivityUseSpent(
+        itemData as TAll5eItemDocuments, replaceData as TAll5eItemDocuments, retainActivitySpent,
+      );
+    }
+    if (foundry.utils.hasProperty(itemData, "system.levels") && foundry.utils.hasProperty(replaceData, "system.levels")){
+      replaceData.system.levels = itemData.system.levels;
+    }
+    if ("system" in itemData && "system" in replaceData && "price" in itemData.system && "price" in replaceData.system
+      && itemData.flags?.ddbimporter && "price" in itemData.flags.ddbimporter
+      && foundry.utils.getProperty(itemData, "flags.ddbimporter.price.xgte")) {
+      replaceData.system.price.value = itemData.system.price.value;
+      replaceData.system.price.denomination = itemData.system.price.denomination;
+      foundry.utils.setProperty(replaceData, "flags.ddbimporter.price", itemData.flags.ddbimporter.price);
+    }
+    return replaceData;
+  }
+
+  static updateMatchingItems(oldItems: TAll5eDocuments[], newItems: TAll5eDocuments[],
+    { looseMatch = false, monster = false, keepId = false, keepDDBId = false, overrideId = false, linkItemFlags = false } = {},
+  ): TAll5eDocuments[] {
+    const results: TAll5eDocuments[] = [];
+
+    for (const newItem of newItems) {
+      let item: TAll5eDocuments = foundry.utils.duplicate(newItem) as unknown as TAll5eDocuments;
+      const compendiumIdMatch = oldItems.find((oldItem) =>
+        item._id
+        && foundry.utils.getProperty(oldItem, "flags.ddbimporter.compendiumId") == item._id,
+      );
+
+      const matched = compendiumIdMatch ?? (overrideId
+        ? oldItems.find((oldItem) => foundry.utils.getProperty(oldItem, "flags.ddbimporter.overrideId") == item._id)
+        : NameMatcher.looseItemNameMatch(item, oldItems, looseMatch, monster));
+
+      if (matched) {
+        const match = foundry.utils.duplicate(matched) as unknown as TAll5eDocuments;
+        // in some instances we want to keep the ddb id
+        if (keepDDBId && foundry.utils.hasProperty(item, "flags.ddbimporter.id")) {
+          foundry.utils.setProperty(match, "flags.ddbimporter.id", foundry.utils.duplicate(item.flags.ddbimporter.id));
+        }
+        if (!item.flags?.ddbimporter) {
+          foundry.utils.setProperty(item, "flags.ddbimporter", match.flags?.ddbimporter);
+        } else if (match.flags?.ddbimporter) {
+          const mergedFlags = foundry.utils.mergeObject(item.flags.ddbimporter, match.flags.ddbimporter);
+          foundry.utils.setProperty(item, "flags.ddbimporter", mergedFlags);
+        }
+        if (match.flags && "monsterMunch" in match.flags
+          && !foundry.utils.hasProperty(item, "flags.monsterMunch")
+          && match.flags.monsterMunch
+        ) {
+          foundry.utils.setProperty(item, "flags.monsterMunch", match.flags.monsterMunch);
+        }
+        foundry.utils.setProperty(item, "flags.ddbimporter.originalItemName", match.name);
+        foundry.utils.setProperty(item, "flags.ddbimporter.replaced", true);
+        if (linkItemFlags && foundry.utils.hasProperty(match, "flags.link-item-resource-5e")) {
+          foundry.utils.setProperty(item, "flags.link-item-resource-5e", match.flags["link-item-resource-5e"]);
+        }
+        item = DDBItemImporter.updateCharacterItemFlags(match, item);
+
+        if (!keepId) delete item["_id"];
+        results.push(item);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Removes items from the documents collection that match the given criteria.
+   * @param {TDDBItemImporterDocument[]} itemsToRemove array of objects to remove from the documents collection
+   * @param {boolean} matchDDBId if true, only remove items where the ddb id matches
+   */
+  removeItems(itemsToRemove: TDDBItemImporterDocument[], matchDDBId = false) {
+    this.documents = this.documents.filter((item) =>
+      !itemsToRemove.some((originalItem) =>
+        (foundry.utils.getProperty(item, "name") === originalItem.name || foundry.utils.getProperty(item, "flags.ddbimporter.originalName") as string === originalItem.name)
+        && item.type === originalItem.type
+        && (!matchDDBId || (matchDDBId && foundry.utils.getProperty(item, "flags.ddbimporter.id") === foundry.utils.getProperty(originalItem, "flags.ddbimporter.id"))),
+      ),
+    );
+  }
+
+
+  async addCompendiumFolderIds(documents: TType[]): Promise<TType[]> {
+    if (this.useCompendiumFolders) {
+      await this.compendiumFolders.loadCompendium(this.type, true);
+      const results = await this.compendiumFolders.addCompendiumFolderIds(documents) as TType[];
+      return results;
+    } else {
+      return documents;
+    }
+  }
+
+  async getFilteredItemIndexes(item: TType): Promise<TIndexEntry[]> {
+    if (!this.compendiumIndex) throw new Error("Compendium index has not been built, call init() first");
+    const indexEntries: TIndexEntry[] =
+      this.compendiumIndex.filter((idx) => idx.name === item.name) as unknown as TIndexEntry[];
+
+    const flagFiltered = indexEntries.filter((idx) => {
+      const nameMatch = idx.name === item.name;
+      if (!nameMatch) return false;
+      const flagMatched = this.#flagMatch(idx, item);
+      return flagMatched;
+    });
+
+    const fieldFiltered = flagFiltered.filter((idx) => {
+      const fieldMatched = this.#fieldMatch(idx, item);
+      return fieldMatched;
+    });
+
+    return fieldFiltered;
+  }
+
+  async getFilteredItemDocuments(item: TType): Promise<Item.Implementation[]> {
+    const indexEntries = await this.getFilteredItemIndexes(item);
+    const mapped = await Promise.all(indexEntries.map((idx) => {
+      const entry = this.compendium.getDocument(idx._id).then((doc) => doc) as Promise<Item.Implementation>;
+      return entry;
+    }));
+    return mapped;
+  }
+
+  /**
+   * Asynchronously creates a new item to be added to a compendium based on its type.
+   * @param {TType} item the data for the new item to be created
+   * @returns {Promise<Item.Implementation | RollTable.Implementation ||null>} a Promise that resolves with the imported item or null if import failed
+   */
+  async createCompendiumItem(item: TType): Promise<Item.Implementation | RollTable.Implementation | null> {
+    let newItem;
+    switch (this.type) {
+      case "tables": {
+        newItem = new RollTable(item as unknown as ConstructorParameters<typeof RollTable>[0]);
+        break;
+      }
+      default: {
+        try {
+          const options = {
+            displaySheet: false,
+            keepId: true,
+            temporary: true,
+          };
+          newItem = new (Item.implementation as any)(item, options);
+        } catch (err) {
+          logger.error(`Error creating ${item.name}`, { item, err });
+          throw err;
+        }
+
+      }
+    }
+    if (!newItem) {
+      logger.error(`Item ${item.name} failed creation`, { item, newItem });
+    }
+    this.currentDocumentCount++;
+
+    if (this.notifierV2) {
+      this.notifierV2?.({
+        progress: { current: this.currentDocumentCount, total: this.totalDocuments },
+        section: "level4",
+        message: `Creating ${item.name}`,
+        progressBar: "secondary",
+      });
+    } else {
+      this.notifier(`(${this.currentDocumentCount}/${this.totalDocuments}) Creating ${item.name}`);
+    }
+
+    logger.debug(`Pushing ${item.name} to compendium (${this.currentDocumentCount}/${this.totalDocuments})`);
+    // import document no longer retains the id
+    // return this.compendium.importDocument(newItem, { keepId: true });
+    const data = newItem.toCompendium(this.compendium, { keepId: true });
+    return newItem.constructor.create(data, { pack: this.compendium.collection, keepId: true });
+  }
+
+  /**
+   * Empty the embedded collections (effects, table results) of an existing compendium document
+   * before it is updated.
+   *
+   * This is a non-recursive replacement of each branch rather than a deleteAll on purpose.
+   * deleteAll builds its id list from this client's cached copy of the document, and the server
+   * rejects the whole request when any of those ids is already gone
+   * ("ActiveEffect X does not exist!"). That is exactly what happens when two munches write the
+   * same document at the same time. A replacement is applied server side against the live
+   * document, so it cannot go stale.
+   */
+  async purgeEmbeddedDocuments(existingItem: Item.Implementation): Promise<void> {
+    const purge: Record<string, never[]> = {};
+    const results = foundry.utils.getProperty(existingItem, "results") as { size?: number } | undefined;
+    if (results?.size) purge.results = [];
+    if (existingItem.effects?.size) purge.effects = [];
+    if (foundry.utils.isEmpty(purge)) return;
+    logger.debug(`Purging ${Object.keys(purge).join(", ")} on ${existingItem.name} before update`);
+    await existingItem.update(purge as unknown as Parameters<typeof existingItem.update>[0], {
+      pack: this.compendium.metadata.id,
+      render: false,
+      recursive: false,
+    } as unknown as Parameters<typeof existingItem.update>[1]);
+  }
+
+  async updateCompendiumItem(updateItem: TType, existingItem: Item.Implementation): Promise<TImportedDocumentResult> {
+    // purge existing active effects on this item
+    if (existingItem.flags) DDBItemImporter.copySupportedItemFlags(existingItem, updateItem);
+    this.currentDocumentCount++;
+    if (this.notifierV2) {
+      this.notifierV2?.({
+        progress: { current: this.currentDocumentCount, total: this.totalDocuments },
+        section: "level4",
+        message: `Updating ${updateItem.name}`,
+        progressBar: "secondary",
+      });
+    } else {
+      this.notifier(`(${this.currentDocumentCount}/${this.totalDocuments}) Updating ${updateItem.name}`);
+    }
+
+    logger.debug(`Updating ${updateItem.name} compendium entry (${this.currentDocumentCount}/${this.totalDocuments})`, {
+      updateItem,
+      existingItem,
+      packId: this.compendium.metadata.id,
+    });
+
+    await this.purgeEmbeddedDocuments(existingItem);
+
+    const update = await existingItem.update(updateItem as any, {
+      pack: this.compendium.metadata.id,
+      render: false,
+      recursive: this.recursive,
+    } as unknown as Parameters<typeof existingItem.update>[1]);
+    // const update = existingItem.update(updateItem, { pack: compendium.metadata.id, recursive: false, render: false });
+    return update;
+  }
+
+  async deleteCreateCompendiumItem(updateItem: TType, existingItem: Item.Implementation): Promise<TImportedDocumentResult> {
+    if (existingItem.flags) DDBItemImporter.copySupportedItemFlags(existingItem, updateItem);
+    this.notifier(`Removing and Recreating ${updateItem.name} compendium entry`);
+    logger.debug(`Removing and Recreating ${updateItem.name} compendium entry`);
+    await existingItem.delete();
+    const newItem = await this.createCompendiumItem(updateItem);
+    return newItem;
+  }
+
+
+  async updateCompendiumItems(inputItems: TType[]): Promise<TImportedDocumentResult[]> {
+    const results: TImportedDocumentResult[] = [];
+    for (const item of inputItems) {
+      const existingItems: Item.Implementation[] = await this.getFilteredItemDocuments(item);
+      // we have a match, update first match
+      if (existingItems.length >= 1) {
+        if (existingItems.length > 1) {
+          logger.warn(`Item ${item.name} has multiple matches in compendium. DDB Importer will delete and recreate this item from scratch. You can most likely ignore this message.`, {
+            item,
+            existingItems,
+          });
+        }
+        const existingItem = existingItems[0];
+        item._id = existingItem._id ?? undefined;
+
+        if (item.type !== existingItem.type || this.deleteBeforeUpdate) {
+          if (item.type !== existingItem.type) {
+            logger.warn(`Item type mismatch ${item.name} from ${existingItem.type} to ${item.type}. DDB Importer will delete and recreate this item from scratch. You can most likely ignore this message.`);
+          }
+          const newItem: TImportedDocumentResult = await this.deleteCreateCompendiumItem(item, existingItem);
+          results.push(newItem);
+        } else {
+          const update: TImportedDocumentResult = await this.updateCompendiumItem(item, existingItem);
+          results.push(update);
+        }
+      }
+    }
+
+    return results;
+  }
+
+  async createCompendiumItems(inputItems: TType[]): Promise<TImportedDocumentResult[]> {
+    const results: TImportedDocumentResult[] = [];
+    for (const item of inputItems) {
+      try {
+        const existingItems = await this.getFilteredItemIndexes(item);
+        // we have no matching items, create new
+        if (existingItems.length === 0) {
+          const newItem = await this.createCompendiumItem(item);
+          results.push(newItem);
+        }
+      } catch (err) {
+        logger.error(`Error creating ${item.name}`, { item, err });
+        throw err;
+      }
+    };
+    return results;
+  }
+
+  async updateCompendium(updateExisting = false, filterDuplicates = true): Promise<TImportedDocumentResult[]> {
+    if (!game.user.isGM) return [];
+    logger.debug(`Getting compendium for update of ${this.type} documents (checking ${this.documents.length} docs)`);
+
+    if (this.deleteAllBeforeUpdate) {
+      await Item.deleteDocuments([], { pack: this.compendium.metadata.id, deleteAll: true });
+    }
+
+    // remove duplicate items based on name and type
+    const filterItems = filterDuplicates
+      ? [...new Map(this.documents.map((item) => {
+        let filterItem = `${item["name"]}${item["type"]}`;
+        this.matchFlags.forEach((flag) => {
+          filterItem += foundry.utils.getProperty(item, `flags.ddbimporter.${flag}`);
+        });
+        return [filterItem, item];
+      })).values()]
+      : this.documents;
+
+    const inputItems = (await this.addCompendiumFolderIds(filterItems)).map((item) => {
+      if (foundry.utils.hasProperty(item, "system.description.value")) {
+        item.system.description.value = `<div class="ddb">
+${item.system.description.value}
+</div>`;
+        item.system.description.chat = item.system.description.chat.trim() !== ""
+          ? `<div class="ddb">
+${item.system.description.chat}
+</div>`
+          : "";
+      }
+      return item;
+    });
+
+    // widened from TType so the guard's predicate can narrow the array
+    const importDocuments: TDDBItemImporterDocument[] = inputItems;
+    await DDBEffectImporter.importStandaloneEffects(importDocuments.filter(DDBItemImporter.isItemDocument));
+
+    let results: TImportedDocumentResult[] = [];
+    // update existing items
+    this.notifier(`Creating and updating ${inputItems.length} ${this.type} documents in compendium...`, { nameField: true });
+
+    if (updateExisting) {
+      results = await this.updateCompendiumItems(inputItems);
+      logger.debug(`Updated ${results.length} existing ${this.type} documents in compendium`);
+    }
+
+    // create new items
+    const createResults = await this.createCompendiumItems(inputItems);
+    logger.debug(`Created ${createResults.length} new ${this.type} documents in compendium`);
+    this.notifier("", { nameField: true });
+    this.notifierV2?.({ message: "",  clear: true, section: "level4" });
+    this.notifierV2?.({ progress: { current: this.totalDocuments, total: this.totalDocuments }, message: "", progressBar: "secondary", clear: true });
+
+    this.results = createResults.concat(results);
+    await Promise.all(this.results);
+    Hooks.callAll(`ddb-importer.${this.type}CompendiumUpdateComplete`, { results: this.results });
+    return this.results;
+  }
+
+  #indexEntryMatchesOriginal(i: TIndexEntry, orig: TAll5eDocuments,
+    { looseMatch = false, monsterMatch = false, relaxed = false } = {},
+  ): boolean {
+    if (!relaxed) {
+      if (!this.#flagMatch(i, orig)) return false;
+      if (!this.#fieldMatch(i, orig)) return false;
+    }
+    const iName = foundry.utils.getProperty(i, "name") as string;
+    const extraNames = (foundry.utils.getProperty(orig, "flags.ddbimporter.dndbeyond.alternativeNames") ?? []) as string[];
+    if (looseMatch) {
+      const looseNames = NameMatcher.getLooseNames(orig.name, extraNames);
+      return looseNames.includes(iName.split("(")[0].trim().toLowerCase());
+    } else if (monsterMatch) {
+      if (iName === orig.name) return true;
+      const monsterNames = NameMatcher.getMonsterNames(orig.name);
+      return monsterNames.includes(iName.toLowerCase());
+    } else {
+      return iName === orig.name || extraNames.includes(iName);
+    }
+  }
+
+  /**
+   * Filter the loaded compendium index down to candidates for the passed originals.
+   * Also reports which originals found no candidate, so a relaxed retry can be limited to them.
+   */
+  #filterIndex(items: TAll5eDocuments[],
+    { looseMatch = false, monsterMatch = false, relaxed = false } = {},
+  ): { candidates: TIndexEntry[]; unmatched: TAll5eDocuments[] } {
+    if (!this.compendiumIndex) throw new Error("Compendium index has not been built");
+    const matchedOriginals = new Set<TAll5eDocuments>();
+    const candidates = this.compendiumIndex.filter((i) => {
+      let hit = false;
+      for (const orig of items) {
+        if (this.#indexEntryMatchesOriginal(i as TIndexEntry, orig, { looseMatch, monsterMatch, relaxed })) {
+          matchedOriginals.add(orig);
+          hit = true;
+        }
+      }
+      return hit;
+    }) as TIndexEntry[];
+    const unmatched = items.filter((orig) => !matchedOriginals.has(orig));
+    return { candidates, unmatched };
+  }
+
+  async loadPassedItemsFromCompendium(items: TAll5eDocuments[],
+    { looseMatch = false, monsterMatch = false, keepId = false, deleteCompendiumId = true,
+      indexFilter = {}, // { fields: ["name", "flags.ddbimporter.id"] }
+      keepDDBId = false, linkItemFlags = false, overrideId = false,
+      rulesFallback = false }: IDDBItemImporterLoadPassedItemsFromCompendiumOptions,
+  ): Promise<TAll5eDocuments[]> {
+
+    await this.buildIndex(indexFilter);
+
+    const strictPassItems = this.#filterIndex(items, { looseMatch, monsterMatch });
+    const firstPassItems = [...strictPassItems.candidates];
+
+    if (rulesFallback && strictPassItems.unmatched.length > 0) {
+      logger.debug(`compendium ${this.type} relaxed rules match for:`, strictPassItems.unmatched.map((i) => i.name));
+      const relaxedPassItems = this.#filterIndex(strictPassItems.unmatched, { looseMatch, monsterMatch, relaxed: true });
+      const seen = new Set(firstPassItems.map((i) => i._id));
+      for (const candidate of relaxedPassItems.candidates) {
+        if (seen.has(candidate._id)) continue;
+        seen.add(candidate._id);
+        firstPassItems.push(candidate);
+      }
+    }
+
+    const loadedItems = [];
+    for (const i of firstPassItems) {
+      const item = await this.compendium.getDocument(i._id).then((doc) => {
+        if (!doc) return null;
+        const docData = doc.toObject() as unknown as TAll5eDocuments;
+        if (deleteCompendiumId) delete docData._id;
+        delete docData.folder;
+        SETTINGS.COMPENDIUM_REMOVE_FLAGS.forEach((flag) => {
+          if (foundry.utils.hasProperty(docData, flag)) foundry.utils.setProperty(docData, flag, undefined);
+        });
+
+        return docData;
+      });
+      if (!item) {
+        logger.warn(`Indexed document ${i._id} is missing from ${this.compendium.metadata.id}, skipping`);
+        continue;
+      }
+      foundry.utils.setProperty(item, "flags.ddbimporter.pack", `${this.compendium.metadata.id}`);
+      loadedItems.push(item);
+    }
+    logger.debug(`compendium ${this.type} loaded items:`, loadedItems);
+
+    const matchingOptions = {
+      looseMatch,
+      monster: monsterMatch,
+      keepId,
+      keepDDBId,
+      linkItemFlags,
+      overrideId,
+    };
+
+    const results = await DDBItemImporter.updateMatchingItems(items as TAll5eDocuments[], loadedItems, matchingOptions);
+    logger.debug(`compendium ${this.type} result items:`, results);
+    return results;
+  }
+
+
+  /**
+   * loads items from compendium
+   * @param {<TAll5eDocuments[]>} items items to search for
+   * @param {string} type type of item to search for
+   * @param {object} options
+   * @param {boolean} [options.looseMatch=false] whether to match item names loosely
+   * @param {boolean} [options.monsterMatch=false] whether to match monster names
+   * @param {boolean} [options.keepId=false] whether to keep the item id
+   * @param {boolean} [options.deleteCompendiumId=true] whether to delete the compendium id
+   * @param {boolean} [options.keepDDBId=false] whether to keep the item ddb id
+   * @param {boolean} [options.linkItemFlags=false] whether to link item flags
+   * @returns {<Document[]>} documents loaded from compendium
+   */
+  static async getCompendiumItems<TType extends TAll5eDocuments = TAll5eDocuments>(
+    items: TType[], type: TDDBImporterTypes,
+    { looseMatch = false, monsterMatch = false, keepId = false,
+      deleteCompendiumId = true, keepDDBId = false, linkItemFlags = false,
+      rulesFallback = false }: IDDBItemImporterGetCompendiumItemsOptions = {},
+  ): Promise<TType[]> {
+
+    const itemImporter = new DDBItemImporter<TType>(type, [], {
+      indexFilter: { fields: [
+        "name",
+        // "flags.ddbimporter.is2014",
+        // "flags.ddbimporter.is2024",
+        "flags.ddbimporter.dndbeyond.alternativeNames",
+        "system.source.rules",
+      ] },
+      // matchFlags: ["is2014", "is2024"],
+      matchFields: ["system.source.rules"],
+    });
+    await itemImporter.init();
+
+    const loadOptions = {
+      looseMatch,
+      monsterMatch,
+      keepId,
+      keepDDBId,
+      deleteCompendiumId,
+      linkItemFlags,
+      rulesFallback,
+      indexFilter: itemImporter.indexFilter,
+    };
+    const results = await itemImporter.loadPassedItemsFromCompendium(items as TType[], loadOptions) as TType[];
+
+    return results;
+  }
+
+  async iconAdditions() {
+    this.documents = await Iconizer.updateIcons({
+      documents: this.documents as TType[],
+      notifier: this.notifier,
+    }) as TType[];
+  }
+
+
+  async useSRDMonsterImages(): Promise<TType[]> {
+    if (!utils.getSetting<boolean>("munching-policy-use-srd-monster-images")) return this.documents;
+    await this._buildSRDLibrary();
+    this.notifier(`Updating SRD Monster Images`, { nameField: true });
+
+
+    for (const monster of this.documents) {
+      if (monster.type !== "npc") continue;
+      if (!("prototypeToken" in monster)) continue;
+      logger.debug(`Checking ${monster.name} for srd images`);
+      const srdImageLibrary = (foundry.utils.getProperty(monster, "flags.ddbimporter.is2014")
+        ? this.srdImageLibrary2014
+        : this.srdImageLibrary2024) ?? [];
+      const nameMatch = srdImageLibrary.find((m) => m.name === monster.name && m.type === "npc");
+      if (nameMatch) {
+        logger.debug(`Updating monster ${monster.name} to srd images`, nameMatch);
+        const monsterToken = monster.prototypeToken;
+        const matchToken = nameMatch.prototypeToken;
+        if (!monsterToken?.texture || !matchToken) {
+          logger.warn(`Missing prototype token data for ${monster.name}, skipping srd image update`, { monster, nameMatch });
+          continue;
+        }
+        const rulesVersion = foundry.utils.getProperty(monster, "system.source.rules") as T5eRulesVersion ?? "2014";
+        const compendiumName = SETTINGS.SRD_COMPENDIUMS[rulesVersion].find((c) => c.type == "monsters")?.name;
+        const moduleArt = game.compendiumArt.get(nameMatch.uuid ?? `Compendium.${compendiumName}.Actor.${nameMatch._id}`);
+        logger.debug(`Updating monster ${monster.name} to srd images`, { nameMatch, moduleArt });
+        monsterToken.texture.scaleY = matchToken.texture.scaleY;
+        monsterToken.texture.scaleX = matchToken.texture.scaleX;
+        if (moduleArt?.actor && !utils.isDefaultOrPlaceholderImage(moduleArt.actor)
+        ) {
+          monster.img = moduleArt.actor;
+          foundry.utils.setProperty(monster, "flags.monsterMunch.imgSet", true);
+        } else if (!utils.isDefaultOrPlaceholderImage(nameMatch.img)) {
+          monster.img = nameMatch.img;
+          foundry.utils.setProperty(monster, "flags.monsterMunch.imgSet", true);
+        }
+
+        const tokenSrcTexture = foundry.utils.getProperty(moduleArt ?? {}, "token.texture.src") as string;
+
+        if (moduleArt?.token && !tokenSrcTexture && utils.isString(moduleArt.token)) {
+          monsterToken.texture.src = moduleArt.token;
+        } else if (moduleArt?.token
+          && tokenSrcTexture
+          && !utils.isDefaultOrPlaceholderImage(tokenSrcTexture)
+        ) {
+          monsterToken.texture.src = tokenSrcTexture;
+          foundry.utils.setProperty(monster, "flags.monsterMunch.tokenImgSet", true);
+          if (foundry.utils.hasProperty(moduleArt, "token.texture.scaleY"))
+            monsterToken.texture.scaleY = moduleArt.token.texture.scaleY as number;
+          const moduleArtScaleX = foundry.utils.getProperty(moduleArt, "token.texture.scaleX") as number | undefined;
+          if (moduleArtScaleX) monsterToken.texture.scaleX = moduleArtScaleX;
+          const moduleArtRing = foundry.utils.getProperty(moduleArt, "token.ring");
+          if (moduleArtRing) foundry.utils.setProperty(monster, "prototypeToken.ring", moduleArtRing);
+        } else if (!utils.isDefaultOrPlaceholderImage(foundry.utils.getProperty(nameMatch, "prototypeToken.texture.src") as string)
+          && foundry.utils.hasProperty(nameMatch, "prototypeToken.texture.src")
+        ) {
+          foundry.utils.setProperty(monster, "flags.monsterMunch.tokenImgSet", true);
+          monsterToken.texture.src = matchToken.texture.src;
+        }
+      }
+    }
+
+    return this.documents;
+  }
+
+  async generateIconMap(): Promise<TType[]> {
+    const promises = [];
+
+    const srdIcons = utils.getSetting<boolean>("munching-policy-use-srd-icons");
+    if (srdIcons) {
+      const srdImageLibrary2014 = await Iconizer.getSRDImageLibrary("2014");
+      const srdImageLibrary2024 = await Iconizer.getSRDImageLibrary("2024");
+      this.notifier(`Updating SRD Icons`, { nameField: true });
+      const itemMap: ICompendiumIconMapEntry[] = [];
+
+      for (const doc of this.documents) {
+        if (!("items" in doc) || !doc.items) continue;
+        this.notifier(`Processing ${doc.name}`);
+        const srdImageLibrary = foundry.utils.getProperty(doc, "flags.ddbimporter.is2014") as boolean
+          ? srdImageLibrary2014
+          : srdImageLibrary2024;
+        promises.push(
+          Iconizer.copySRDIcons(doc.items, srdImageLibrary, itemMap).then((items) => {
+            doc.items = items as I5ePCItem[] | I5eMonsterItem[] | I5eVehicleItem[];
+          }),
+        );
+      }
+    }
+
+    return Promise.all(promises) as unknown as TType[];
+  }
+
+  static async buildHandler<TType extends TDDBItemImporterDocument = TDDBItemImporterDocument>(type: TDDBImporterTypes, documents: TType[], updateBool: boolean,
+    { ids = null, chrisPremades = false, matchFlags = [], matchFields = [], indexFilter = null,
+      deleteBeforeUpdate = null, filterDuplicates = true, useCompendiumFolders = null, updateIcons = true, notifier = null, recursive = null }: IDDBItemImporterBuildHandlerOptions,
+    overrideHandler: DDBItemImporter | null = null,
+  ): Promise<DDBItemImporter> {
+    const handler = overrideHandler ?? new DDBItemImporter<TType>(type, documents, {
+      matchFlags,
+      matchFields,
+      deleteBeforeUpdate,
+      useCompendiumFolders,
+      notifier,
+      indexFilter,
+      recursive,
+    });
+    if (overrideHandler) handler.documents = documents;
+    await handler.init();
+    if (updateIcons) await handler.iconAdditions();
+    const filteredItems = (ids !== null && ids.length > 0)
+      ? handler.documents.filter((s) =>
+        foundry.utils.hasProperty(s, "flags.ddbimporter.definitionId")
+        && ids.includes(String(foundry.utils.getProperty(s, "flags.ddbimporter.definitionId"))))
+      : handler.documents;
+
+    handler.documents = filteredItems;
+    if (chrisPremades) {
+      // Lazy import: a static one would recreate the lib <-> effects barrel cycle.
+      const { default: ExternalAutomations } = await import(/* webpackMode: "eager" */ "../effects/external/ExternalAutomations");
+      handler.documents = await ExternalAutomations.applyChrisPremadeEffects({
+        documents: handler.documents as TExternalAutomationDocuments[],
+        compendiumItem: true,
+      });
+    }
+    if (notifier) notifier(`Importing ${handler.documents.length} ${type} documents!`, { nameField: true });
+    logger.debug(`Importing ${handler.documents.length} ${type} documents!`, foundry.utils.deepClone(documents));
+    // logger.warn("data", {
+    //   handler,
+    //   index: foundry.utils.deepClone(handler.compendiumIndex),
+    //   compendiumIndex: handler.compendiumIndex,
+    // })
+    await handler.updateCompendium(updateBool, filterDuplicates);
+    await handler.buildIndex();
+    return handler;
+  }
+
+}

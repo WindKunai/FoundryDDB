@@ -1,0 +1,404 @@
+import { logger } from "../../lib/_module";
+import type DDBMonsterFeature from "../monster/features/DDBMonsterFeature";
+import DDBBasicActivity from "./DDBBasicActivity";
+
+interface IDDBMonsterFeatureActivity {
+  type: IDDBActivityType;
+  name?: string | null;
+  ddbParent?: DDBMonsterFeature;
+  nameIdPrefix?: string | null;
+  nameIdPostfix?: string | null;
+  id?: string | null;
+  foundryFeature?: I5eMonsterItem | null;
+  actor?: I5eMonsterData | null;
+}
+
+interface IDDBMonsterFeatureActivityCreate extends Omit<IDDBBasicActivityCreateOptions, "document" | "character"> {
+  document: I5eMonsterItem;
+  character?: I5eMonsterData | null;
+}
+
+export default class DDBMonsterFeatureActivity extends DDBBasicActivity {
+
+  declare ddbParent: DDBMonsterFeature;
+
+  /** builder-shape view of the activity data while parts are being assembled */
+  get buildData(): IActivityData {
+    return this.data as IActivityData;
+  }
+
+  actionData: IDDBMonsterActionData;
+
+  override _init() {
+    logger.debug(`Generating DDBMonsterFeatureActivity ${this.name ?? this.type ?? "?"} for ${this.actor?.name}`);
+  }
+
+  constructor({ type, name, ddbParent, nameIdPrefix = null, nameIdPostfix = null, id = null, foundryFeature = null, actor = null }: IDDBMonsterFeatureActivity) {
+    super({
+      type,
+      name,
+      ddbParent,
+      foundryFeature: foundryFeature ?? ddbParent?.data,
+      nameIdPrefix,
+      nameIdPostfix,
+      actor: actor ?? ddbParent?.ddbMonster.npc ?? null,
+      id,
+    });
+
+    if (!ddbParent) {
+      logger.warn(`DDBMonsterFeatureActivity ${this.name}: constructed without a ddbParent, actionData unavailable`);
+    }
+    // ddbParent is always supplied outside of the static createActivity path
+    this.actionData = ddbParent?.actionData as IDDBMonsterActionData;
+  }
+
+  override _generateActivation({ activationOverride = null, activationCondition }: {
+    activationOverride?: I5eActivityActivation | null;
+    activationCondition?: string;
+  } = {}) {
+    this.data.activation = foundry.utils.deepClone(activationOverride ?? this.actionData.activation);
+    if (activationCondition !== undefined) this.data.activation.condition = activationCondition;
+  }
+
+  override _generateConsumption({ consumptionOverride = null }: { consumptionOverride?: I5eActivityConsumption | null } = {}) {
+    if (consumptionOverride) {
+      this.data.consumption = consumptionOverride;
+      return;
+    }
+    let targets = [];
+    const scaling = false;
+
+    // types:
+    // "attribute"
+    // "hitDice"
+    // "material"
+    // "itemUses"
+
+    const consumptionType = this.ddbParent.usesOnActivity
+      ? "activityUses"
+      : "itemUses";
+
+    if (this.actionData.consumptionTargets?.length > 0) {
+      targets = this.actionData.consumptionTargets;
+    } else if (this.actionData.consumptionValue) {
+      targets.push({
+        type: consumptionType,
+        target: "",
+        value: this.actionData.consumptionValue,
+        scaling: {
+          mode: "",
+          formula: "",
+        },
+      });
+    }
+
+    this.data.consumption = {
+      targets,
+      scaling: {
+        allowed: scaling,
+        max: "",
+      },
+    };
+
+  }
+
+  override _generateDescription() {
+    this.data.description = {
+      chatFlavor: (foundry.utils.getProperty(this.foundryFeature, "system.chatFlavor") as string) ?? "",
+    };
+  }
+
+  override _generateDuration({ durationOverride = null }: { durationOverride?: I5eActivityDuration | null } = {}) {
+    // cloned for the reason `_generateRange` gives: actionData.duration is shared by every
+    // activity of the feature, and an enricher's own duration must not rewrite its siblings'
+    if (durationOverride) {
+      this.data.duration = { ...foundry.utils.deepClone(durationOverride), override: true };
+      return;
+    }
+    this.data.duration = foundry.utils.deepClone(this.actionData.duration);
+  }
+
+  override _generateEffects() {
+    logger.debug(`Stubbed effect generation for ${this.name}`);
+    // Enchantments need effects here
+  }
+
+  override _generateRange({ rangeOverride = null }: { rangeOverride?: I5eActivityRange | null } = {}) {
+    // cloned: actionData.range is shared by every activity of the feature, and an enricher
+    // `data.range` override merges in place, which would rewrite the sibling activities' range
+    this.data.range = rangeOverride
+      ? foundry.utils.deepClone(rangeOverride)
+      : foundry.utils.deepClone(this.actionData.range as unknown as I5eActivityRange);
+  }
+
+  override _generateTarget({ targetOverride = null }: { targetOverride?: I5eActivityTarget | null } = {}) {
+    // cloned: actionData.target is shared by every activity of the feature, and an enricher
+    // override that blanks one activity's template must not blank its siblings through it
+    this.data.target = foundry.utils.deepClone(targetOverride ?? this.actionData.target);
+  }
+
+  _getFeaturePartsDamage() {
+    const baseParts = this.ddbParent.templateType === "weapon"
+      ? this.actionData.damageParts.slice(1)
+      : this.actionData.damageParts;
+
+    return baseParts;
+  }
+
+  override _generateDamage({ parts = [], includeBase = true, allowCritical = null, onSave = "half" }: {
+    parts?: I5eDamagePart[] | null;
+    includeBase?: boolean | null;
+    allowCritical?: boolean | null;
+    onSave?: string | null;
+  } = {}) {
+    const companion = foundry.utils.getProperty(this.ddbParent.ddbMonster, "npc.flags.ddbimporter.entityTypeId") === "companion-feature";
+
+    let damageParts = (parts ?? []).length > 0
+      ? (parts ?? [])
+      : this._getFeaturePartsDamage().map((data) => data.part);
+
+    if (companion) {
+      damageParts = damageParts.map((data) => {
+        if (data.bonus) data.bonus = data.bonus.replace("@prof", "").replace(/\s*[-+]\s*$/, "");
+        return data;
+      });
+    }
+
+    // the parser intentionally emits null onSave/includeBase values, which the dnd5e
+    // schema cleans, but I5eActivityDamage only allows string/boolean | undefined
+    this.buildData.damage = {
+      critical: {
+        allow: allowCritical ?? (this.type === "attack" || this.foundryFeature.type === "weapon"),
+      },
+      onSave: onSave ?? undefined,
+      includeBase: includeBase ?? undefined,
+      parts: damageParts,
+    };
+
+    // damage: {
+    //   critical: {
+    //     allow: false,
+    //     bonus: source.system.critical?.damage
+    //   },
+    //   onSave: (source.type === "spell") && (source.system.level === 0) ? "none" : "half",
+    //   includeBase: true,
+    //   parts: damageParts.map(part => this.transformDamagePartData(source, part)) ?? []
+    // }
+  }
+
+  override _generateHealing({ part = null }: { part?: any; healingPart?: any; healingChatFlavor?: string | null } = {}) {
+    const healing = part
+      ? part
+      : this.actionData.healingParts.length > 0
+        ? this.actionData.healingParts.map((data) => data.part)[0]
+        : undefined;
+    this.buildData.healing = healing;
+  }
+
+  override _generateSave({ saveOverride = null }: { saveOverride?: I5eActivitySave | null } = {}) {
+    if (saveOverride) {
+      this.buildData.save = saveOverride;
+      return;
+    }
+    this.buildData.save = this.actionData.save;
+  }
+
+
+  override _generateAttack() {
+    const classification = this.ddbParent.spellAttack
+      ? "spell"
+      : "weapon"; // unarmed, weapon, spell
+
+    const type = this.ddbParent.rangedAttack
+      ? "ranged"
+      : "melee";
+
+    const attack: I5eActivityAttack = {
+      ability: this.actionData.baseAbility ?? "",
+      bonus: this.actionData.extraAttackBonus && `${this.actionData.extraAttackBonus}`.trim() !== "0" ? `${this.actionData.extraAttackBonus}` : "",
+      critical: {
+        threshold: undefined,
+      },
+      flat: false, // almost never false for PC features
+      type: {
+        value: type,
+        classification,
+      },
+    };
+
+    this.buildData.attack = attack;
+
+  }
+
+  override _generateCheck({ checkOverride = null }: { checkOverride?: I5eActivityCheck | null }) {
+    this.buildData.check = checkOverride ?? {
+      associated: this.actionData.associatedToolsOrAbilities,
+      ability: this.actionData.ability ?? "",
+      dc: {},
+    };
+  }
+
+  override build({
+    activationOverride,
+    activationCondition,
+    allowCritical,
+    additionalTargets,
+    attackData,
+    chatFlavor,
+    checkOverride = null,
+    consumeActivity,
+    consumeItem,
+    criticalDamage,
+    damageParts = [],
+    damageScalingOverride,
+    data,
+    ddbMacroOverride,
+    durationOverride,
+    generateActivation = true,
+    generateAttack = false,
+    generateCheck = false,
+    generateConsumption = true,
+    generateDamage = false,
+    generateDDBMacro = false,
+    generateDescription = false,
+    generateDuration = true,
+    generateEffects = true,
+    generateEnchant = false,
+    generateHealing = false,
+    generateRange = true,
+    generateRoll = false,
+    generateSave = false,
+    generateSpell = false,
+    generateSummon = false,
+    generateTarget = true,
+    generateUses,
+    healingChatFlavor,
+    healingPart = null,
+    img,
+    includeBaseDamage = true,
+    noeffect,
+    noManualActivation,
+    onSave,
+    rangeOverride,
+    rollOverride,
+    saveOverride,
+    spellOverride,
+    targetOverride,
+    usesOverride,
+    consumptionOverride = null,
+  }: IDDBItemActivityBuild = {}) {
+
+    // override set to false on object if overriding
+
+    logger.debug(`Generating Activity for ${this.ddbParent.name}`, {
+      damageParts,
+      healingPart,
+      generateActivation,
+      generateAttack,
+      generateConsumption,
+      generateDamage,
+      generateDescription,
+      generateDuration,
+      generateEffects,
+      generateHealing,
+      generateRange,
+      generateSave,
+      generateTarget,
+      includeBaseDamage,
+      generateCheck,
+      checkOverride,
+      generateDDBMacro,
+      generateRoll,
+      rollOverride,
+      generateSummon,
+      consumptionOverride,
+      saveOverride,
+      allowCritical,
+      this: this,
+    });
+
+    if (generateActivation) this._generateActivation({ activationOverride, activationCondition });
+    if (generateAttack) this._generateAttack();
+    if (generateConsumption) this._generateConsumption({ consumptionOverride });
+    if (generateDescription) this._generateDescription();
+    if (generateDuration) this._generateDuration({ durationOverride });
+    if (generateEffects) this._generateEffects();
+    if (generateRange) this._generateRange({ rangeOverride });
+    if (generateTarget) this._generateTarget({ targetOverride });
+
+    if (generateSave) this._generateSave({ saveOverride });
+    if (generateDamage) this._generateDamage({ parts: damageParts, includeBase: includeBaseDamage, allowCritical, onSave });
+    if (generateHealing) this._generateHealing({ part: healingPart });
+
+    if (generateCheck) this._generateCheck({ checkOverride });
+
+    super.build({
+      generateActivation: false,
+      generateAttack: false,
+      generateSpell,
+      generateConsumption: false,
+      generateCheck: false,
+      generateDamage: false,
+      generateDescription,
+      generateDuration: false,
+      generateEffects: false,
+      generateHealing: false,
+      generateRange: false,
+      generateSave: false,
+      generateTarget: false,
+      generateDDBMacro,
+      generateEnchant,
+      generateRoll,
+      generateSummon,
+      healingChatFlavor,
+      generateUses,
+      chatFlavor,
+      onSave,
+      noeffect,
+      spellOverride,
+      rollOverride,
+      targetOverride,
+      checkOverride,
+      rangeOverride,
+      activationOverride,
+      noManualActivation,
+      durationOverride,
+      img,
+      ddbMacroOverride,
+      usesOverride,
+      additionalTargets,
+      consumeActivity,
+      consumeItem,
+      saveOverride,
+      data,
+      attackData,
+      includeBaseDamage,
+      criticalDamage,
+      damageScalingOverride,
+      healingPart,
+      damageParts,
+      allowCritical,
+    });
+
+
+  }
+
+  static override async createActivity({ document, type, name, character }: IDDBMonsterFeatureActivityCreate,
+    options: IDDBItemActivityBuild = {},
+  ): Promise<string> {
+    const activity = new DDBMonsterFeatureActivity({
+      name: name ?? null,
+      type,
+      foundryFeature: document,
+      actor: character,
+    });
+
+    activity.build(options);
+    foundry.utils.setProperty(document, `system.activities.${activity.data._id}`, activity.data);
+
+    // _generateDataStub always assigns data._id in the constructor
+    return activity.data._id ?? "";
+
+  }
+
+}

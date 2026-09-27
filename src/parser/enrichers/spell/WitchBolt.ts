@@ -1,0 +1,75 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class WitchBolt extends DDBEnricherData {
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Cast",
+      splitDamage: true,
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Ongoing Damage",
+          type: DDBEnricherData.ACTIVITY_TYPES.DAMAGE,
+        },
+        build: {
+          generateDamage: true,
+          generateConsumption: false,
+          noSpellslot: true,
+          generateTarget: true,
+          generateActivation: true,
+          activationOverride: {
+            value: 1,
+            type: this.is2014 ? "action" : "bonus",
+          },
+          targetOverride: {
+            override: true,
+            template: {
+              count: "1",
+              contiguous: false,
+              type: "",
+              size: this.is2014 ? "30" : "60",
+              units: "ft",
+            },
+            affects: {},
+          },
+          damageParts: [
+            DDBEnricherData.basicDamagePart({
+              number: 1,
+              denomination: 12,
+              type: "lightning",
+              scalingMode: "none",
+              scalingNumber: null,
+            }),
+          ],
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [{
+      activityMatch: "Cast",
+    }];
+  }
+
+  override get itemMacro(): IDDBItemMacro {
+    return {
+      type: "spell",
+      name: "witchBolt.js",
+    };
+  }
+
+  override get setMidiOnUseMacroFlag(): IDDBSetMidiOnUseMacroFlag {
+    return {
+      type: "spell",
+      name: "witchBolt.js",
+      triggerPoints: this.is2014 ? ["postActiveEffects"] : ["postAttackRoll"],
+    };
+  }
+
+}

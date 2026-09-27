@@ -1,0 +1,29 @@
+node_modules/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+/dist/
+diff-folder/
+diff/
+
+yarn-error.log
+
+yarn.lock
+module.json
+
+.DS_Store
+
+
+# Foundry
+foundry-config.yaml
+foundry
+dnd5e
+
+.fallow/
+.vitest/
+coverage/
+
+# Secrets
+.env
+.env.local
+audit-output/

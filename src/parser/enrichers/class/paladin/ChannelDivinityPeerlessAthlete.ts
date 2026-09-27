@@ -1,0 +1,33 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class ChannelDivinityPeerlessAthlete extends DDBEnricherData {
+
+  override get activity(): IDDBActivityData {
+    return {
+      type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+      name: "Activate Peerless Athlete",
+      addItemConsume: true,
+      data: {
+        duration: {
+          units: "minute",
+          value: "10",
+        },
+      },
+    };
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [{
+      name: "Peerless Athlete",
+      options: {
+        durationSeconds: 3600,
+        description: "Advantage on Strength (Athletics) and Dexterity (Acrobatics) checks, and the distance of your Long and High Jumps increases by 10 feet",
+      },
+      changes: [
+        DDBEnricherData.ChangeHelper.advantageSkillChange("ath"),
+        DDBEnricherData.ChangeHelper.advantageSkillChange("acr"),
+      ],
+    }];
+  }
+
+}

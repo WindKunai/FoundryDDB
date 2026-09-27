@@ -1,0 +1,39 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class Counterspell extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    if (this.is2014) {
+      return DDBEnricherData.ACTIVITY_TYPES.CHECK;
+    } else {
+      return "save";
+    }
+  }
+
+  override get activity(): IDDBActivityData | null {
+    if (this.is2014) {
+      return {
+        type: DDBEnricherData.ACTIVITY_TYPES.CHECK,
+        data: {
+          check: {
+            associated: [],
+            ability: "spellcasting",
+            dc: {
+              calculation: "",
+              formula: "",
+            },
+          },
+        },
+      };
+    } else {
+      return null;
+    }
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      midiManualReaction: true,
+    };
+  }
+
+}

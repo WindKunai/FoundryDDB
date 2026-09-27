@@ -1,0 +1,70 @@
+import { utils } from "../../lib/_module";
+import * as SpellEnrichers from "./spell/_module";
+import DDBEnricherFactoryMixin from "./mixins/DDBEnricherFactoryMixin";
+import type DDBEnricherData from "./data/DDBEnricherData";
+
+export default class DDBSpellEnricher extends DDBEnricherFactoryMixin {
+  constructor({ activityGenerator, notifier = null }: {
+    activityGenerator?: TActivityGenerator;
+    notifier?: NotifierV1 | null;
+    fallbackEnricher?: string | null;
+  } = {}) {
+    super({
+      activityGenerator,
+      effectType: "spell",
+      enricherType: "spell",
+      notifier,
+      ddbActionType: "spell",
+    });
+  }
+
+  _defaultNameLoader(): DDBEnricherData | null {
+    if (!this.name) return null;
+    const spellName = utils.pascalCase(this.name);
+    const Enricher = (SpellEnrichers as Record<string, EnricherConstructor | undefined>)[spellName];
+    if (!Enricher) {
+      return null;
+    }
+    return new Enricher({
+      ddbEnricher: this,
+    });
+  }
+
+  override NAME_HINTS_2014: Record<string, string> = {};
+
+  override NAME_HINTS: Record<string, string> = {};
+
+  ENRICHERS: Record<string, EnricherConstructor> = {
+    "Antipathy/Sympathy": SpellEnrichers.AntipathySympathy,
+    "Bigby's Hand": SpellEnrichers.ArcaneHand,
+    "Drawmij's Instant Summons": SpellEnrichers.DrawmijsInstantSummons,
+    "Laeral's Silver Lance": SpellEnrichers.LaeralsSilverLance,
+    "Otiluke's Freezing Sphere": SpellEnrichers.OtilukesFreezingSphere,
+    "Rary's Telepathic Bond": SpellEnrichers.RarysTelepathicBond,
+    "Blindness/Deafness": SpellEnrichers.BlindnessDeafness,
+    "Dragon's Breath": SpellEnrichers.DragonsBreath,
+    "Enlarge/Reduce": SpellEnrichers.EnlargeReduce,
+    "Evard's Black Tentacles": SpellEnrichers.BlackTentacles,
+    "Green-Flame Blade": SpellEnrichers.GreenFlameBlade,
+    "Hold Monster": SpellEnrichers.HoldThing,
+    "Hold Person": SpellEnrichers.HoldThing,
+    "Hunter's Mark": SpellEnrichers.HuntersMark,
+    "Jallarzi's Storm of Radiance": SpellEnrichers.JallarzisStormOfRadiance,
+    "Melf's Acid Arrow": SpellEnrichers.AcidArrow,
+    "Leomund's Secret Chest": SpellEnrichers.SecretChest,
+    "Mordenkainen's Faithful Hound": SpellEnrichers.FaithfulHound,
+    "Mordenkainen's Sword": SpellEnrichers.ArcaneSword,
+    "Otiluke's Resilient Sphere": SpellEnrichers.ResilientSphere,
+    "Otto's Irresistible Dance": SpellEnrichers.IrresistibleDance,
+    "Tenser's Floating Disk": SpellEnrichers.FloatingDisk,
+    "Tasha's Bubbling Cauldron": SpellEnrichers.TashasBubblingCauldron,
+    "Tasha's Caustic Brew": SpellEnrichers.TashasCausticBrew,
+    "Tasha's Hideous Laughter": SpellEnrichers.HideousLaughter,
+    "Accelerate/Decelerate": SpellEnrichers.AccelerateDecelerate,
+    // Frontiers of Eberron reprint; same mechanics as the 2014 spell
+    "Absorb Elements (Frontiers of Eberron)": SpellEnrichers.AbsorbElements,
+    "Mold Earth (Frontiers of Eberron)": SpellEnrichers.MoldEarth,
+  };
+
+  FALLBACK_ENRICHERS: Record<string, EnricherConstructor> = {};
+}

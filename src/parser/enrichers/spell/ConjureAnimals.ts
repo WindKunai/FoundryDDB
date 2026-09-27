@@ -1,0 +1,56 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class ConjureAnimals extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    if (this.is2014) return null;
+    return DDBEnricherData.ACTIVITY_TYPES.SUMMON;
+  }
+
+  override get summonsFunction(): ((data: ICompanionData) => Promise<ICompanionResult>) | null {
+    return DDBImporter.lib.DDBSummonsInterface.getConjureAnimals2024;
+  }
+
+  override get generateSummons(): boolean {
+    return !this.is2014;
+  }
+
+  override get activity(): IDDBActivityData | null {
+    if (this.is2014) return null;
+    return {
+      type: DDBEnricherData.ACTIVITY_TYPES.SUMMON,
+      noTemplate: true,
+      profileKeys: [
+        { count: 1, name: "ConjureAnimals" },
+      ],
+      summons: {
+        "match": {
+          "proficiency": false,
+          "attacks": false,
+          "saves": true,
+        },
+        "bonuses": {
+          "ac": "",
+          "hp": "",
+          "attackDamage": "",
+          "saveDamage": "(@item.level - 3)d10",
+          "healing": "",
+        },
+      },
+    };
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      data: {
+        flags: {
+          ddbimporter: {
+            disposition: {
+              match: true,
+            },
+          },
+        },
+      },
+    };
+  }
+}

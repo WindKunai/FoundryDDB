@@ -1,0 +1,39 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class ThrillOfTheHunt extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.DAMAGE;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Damage bonus",
+      noeffect: true,
+      activationType: "special",
+      activationCondition: "1/turn. Damage someone with your bite attack",
+      removeDamageParts: true,
+      damageParts: [
+        DDBEnricherData.basicDamagePart({
+          bonus: "@scale.the-predator.thrill-of-the-hunt",
+          types: ["necrotic"],
+        }),
+      ],
+    };
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      uses: {
+        spent: null,
+        max: "1",
+        recovery: [
+          { period: "sr", type: "recoverAll", formula: undefined },
+        ],
+      },
+      retainOriginalConsumption: true,
+      retainUseSpent: true,
+    };
+  }
+
+}

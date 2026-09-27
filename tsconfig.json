@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "module": "ES2022",
+    "target": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": [
+      "fvtt-types",
+      "dnd5e",
+      "vitest/globals",
+    ],
+    "paths": {
+      "@client/*": ["./foundry/client/*"],
+      "@common/*": ["./foundry/common/*"]
+    },
+    "skipLibCheck": true,
+    "noImplicitOverride": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.mjs",
+    "src/**/*.js",
+    "tests/**/*.ts",
+  ],
+  "exclude": ["node_modules", "dist", "vendor", "src/vendor"]
+}

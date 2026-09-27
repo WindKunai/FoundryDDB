@@ -1,0 +1,61 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class FoeSlayer extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return this.is2014 ? null : DDBEnricherData.ACTIVITY_TYPES.ENCHANT;
+  }
+
+  override get activity(): IDDBActivityData {
+    return this.is2014
+      ? {}
+      : {
+        targetType: "self",
+        data: {
+          restrictions: {
+            type: "spell",
+            allowMagical: true,
+          },
+        },
+      };
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return this.is2014
+      ? [{
+        name: "Foe Slayer (Automation)",
+        options: {
+          transfer: true,
+        },
+        midiOptionalChanges: [
+          {
+            name: "foeSlayer",
+            data: {
+              label: "Use Foe Slayer?",
+              "damage.msak": "@abilities.wis.mod",
+              "damage.mwak": "@abilities.wis.mod",
+              "damage.rsak": "@abilities.wis.mod",
+              "damage.rwak": "@abilities.wis.mod",
+              count: "each-round",
+            },
+          },
+        ],
+      }]
+      : [
+        {
+          name: "Foe Slayer",
+          type: "enchant",
+          ignoreTransfer: true,
+          options: {
+            transfer: true,
+            disabled: true,
+          },
+          changes: [
+            DDBEnricherData.ChangeHelper.overrideChange(`{} [Foe Slayer]`, 10, "name"),
+            DDBEnricherData.ChangeHelper.overrideChange(`{ denomination: 10 }`, 20, "system.damage.parts"),
+          ],
+        },
+      ];
+  }
+
+}

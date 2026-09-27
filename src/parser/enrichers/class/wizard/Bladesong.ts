@@ -1,0 +1,96 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class Bladesong extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.ENCHANT;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      targetType: "self",
+      activationType: "bonus",
+      data: {
+        name: "Activate Bladesong",
+        restrictions: {
+          type: "weapon",
+          allowMagical: true,
+        },
+      },
+    };
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        type: "enchant",
+        name: "Bladework (Int)",
+        changes: [
+          DDBEnricherData.ChangeHelper.overrideChange(`{} [Bladework]`, 20, "name"),
+          DDBEnricherData.ChangeHelper.overrideChange("0", 50, "system.damage.base.custom.enabled"),
+          DDBEnricherData.ChangeHelper.overrideChange("none", 50, "activities[attack].attack.ability"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange(`@abilities.int.mod`, 50, "activities[attack].attack.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange(`@abilities.int.mod`, 50, "system.damage.base.bonus"),
+        ],
+        options: {
+          durationSeconds: 60,
+        },
+        data: {
+          flags: {
+            ddbimporter: {
+              effectRiders: ["ddbBladeSongEff1"],
+            },
+          },
+        },
+      },
+      {
+        type: "enchant",
+        name: "Bladework (Physical)",
+        changes: [
+          DDBEnricherData.ChangeHelper.overrideChange(`{} [Bladework]`, 20, "name"),
+        ],
+        options: {
+          durationSeconds: 60,
+        },
+        data: {
+          flags: {
+            ddbimporter: {
+              effectRiders: ["ddbBladeSongEff1"],
+            },
+          },
+        },
+      },
+      {
+        name: "Bladesong",
+        options: {
+          durationSeconds: 60,
+          transfer: true,
+        },
+        changes: [
+          DDBEnricherData.ChangeHelper.unsignedAddChange("max(@abilities.int.mod,1)", 20, "system.attributes.ac.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange("max(@abilities.int.mod,1)", 20, "system.attributes.concentration.roll.bonus"),
+          DDBEnricherData.ChangeHelper.unsignedAddChange("10", 20, "system.attributes.movement.speeds.walk"),
+          DDBEnricherData.ChangeHelper.advantageSkillChange("acr"),
+        ],
+        activitiesMatch: ["Not real"],
+        data: {
+          _id: "ddbBladeSongEff1",
+        },
+      },
+    ];
+  }
+
+  override get override(): IDDBOverrideData | null {
+    if (this.is2014) return null;
+    return {
+      uses: this._getUsesWithSpent({
+        type: "class",
+        name: "Bladesong",
+        includesName: true,
+        max: "1 * @abilities.int.mod",
+        period: "lr",
+      }),
+    };
+  }
+
+}

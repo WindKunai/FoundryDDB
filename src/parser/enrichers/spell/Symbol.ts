@@ -1,0 +1,176 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+interface ISymbolGlyph {
+  name: string;
+  save: string;
+  data?: Record<string, any>;
+  effect?: IDDBEffectHint;
+}
+
+export default class Symbol extends DDBEnricherData {
+
+  get data2014(): ISymbolGlyph[] {
+    return [
+      {
+        name: "Death",
+        save: "con",
+        data: {
+          damage: {
+            number: 1,
+            denomination: 10,
+            type: "necrotic",
+          },
+        },
+      },
+      {
+        name: "Discord",
+        save: "con",
+        effect: {
+          changes: [
+            ...["str", "dex", "con", "int", "wis", "cha"].map((ability) =>
+              DDBEnricherData.ChangeHelper.disadvantageAbilityCheckChange(ability),
+            ),
+            DDBEnricherData.ChangeHelper.ruleDisadvantageChange("attack"),
+          ],
+        },
+      },
+      {
+        name: "Fear",
+        save: "wis",
+        effect: {
+          statuses: ["Frightened"],
+        },
+      },
+      {
+        name: "Hopelessness",
+        save: "cha",
+      },
+      {
+        name: "Insanity",
+        save: "int",
+        effect: {
+          statuses: ["Insane"],
+        },
+      },
+      {
+        name: "Pain",
+        save: "con",
+        effect: {
+          statuses: ["Incapacitated"],
+        },
+      },
+      {
+        name: "Sleep",
+        save: "wis",
+        effect: {
+          statuses: ["Unconscious"],
+        },
+      },
+      {
+        name: "Stunning",
+        save: "wis",
+        effect: {
+          statuses: ["Stunned"],
+        },
+      },
+    ];
+  }
+
+  get data2024(): ISymbolGlyph[] {
+    return [
+      {
+        name: "Death",
+        save: "con",
+        data: {
+          damage: {
+            number: 1,
+            denomination: 10,
+            type: "necrotic",
+          },
+        },
+      },
+      {
+        name: "Discord",
+        save: "wis",
+        effect: {
+          changes: [
+            ...["str", "dex", "con", "int", "wis", "cha"].map((ability) =>
+              DDBEnricherData.ChangeHelper.disadvantageAbilityCheckChange(ability),
+            ),
+            DDBEnricherData.ChangeHelper.ruleDisadvantageChange("attack"),
+          ],
+        },
+      },
+      {
+        name: "Fear",
+        save: "wis",
+        effect: {
+          statuses: ["Frightened"],
+        },
+      },
+      {
+        name: "Pain",
+        save: "con",
+        effect: {
+          statuses: ["Incapacitated"],
+        },
+      },
+      {
+        name: "Sleep",
+        save: "wis",
+        effect: {
+          statuses: ["Unconscious"],
+        },
+      },
+      {
+        name: "Stunning",
+        save: "wis",
+        effect: {
+          statuses: ["Stunned"],
+        },
+      },
+    ];
+  }
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return (this.is2014 ? this.data2014 : this.data2024).map((symbol) => {
+      return {
+        init: {
+          name: symbol.name,
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateSave: true,
+          generateEffect: true,
+          saveOverride: {
+            ability: [symbol.save],
+            dc: {
+              formula: "",
+              calculation: "spellcasting",
+            },
+          },
+        },
+        overrides: {
+          noSpellslot: true,
+          data: symbol.data ?? {},
+          targetOverride: true,
+          targetType: "creature",
+        },
+      };
+    });
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return (this.is2014 ? this.data2014 : this.data2024).map((symbol) => {
+      return foundry.utils.mergeObject({
+        name: symbol.name,
+      }, symbol.effect ?? {});
+    });
+  }
+
+}
+

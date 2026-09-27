@@ -1,0 +1,59 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class InsightfulFighting extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.CHECK;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Insight Check",
+      targetType: "self",
+      activationType: "bonus",
+      data: {
+        check: {
+          associated: ["ins"],
+          ability: "",
+          dc: {
+            calculation: "",
+            formula: "",
+          },
+        },
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        duplicate: true,
+        overrides: {
+          name: "vs Deception Check",
+          activationType: "special",
+          targetType: "creature",
+          data: {
+            check: {
+              associated: ["dec"],
+            },
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    return [
+      {
+        name: "Insightful Fighting: Target",
+        activityMatch: "No Match",
+        options: {
+          durationSeconds: 60,
+          description: "You can use sneak attack against the target even if you don’t have advantage on the attack roll.",
+        },
+      },
+    ];
+  }
+
+
+}

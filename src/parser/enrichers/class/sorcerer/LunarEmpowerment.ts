@@ -1,0 +1,159 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class LunarEmpowerment extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+      name: "Full Moon: Shed Light",
+      activationType: "special",
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Full Moon",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateConsumption: false,
+          generateTarget: false,
+          generateRange: false,
+          generateActivation: true,
+          activationOverride: {
+            type: "special",
+            value: 1,
+            condition: "",
+          },
+        },
+        overrides: {
+          data: {
+            target: {
+              override: true,
+              affects: {
+                type: "ally",
+              },
+              template: {
+                contiguous: false,
+                type: "radius",
+                size: "10",
+                units: "ft",
+              },
+            },
+            behaviors: [
+              DDBEnricherData.BehaviorHelper.applyEffect({
+                effects: "Full Moon Aura",
+                auraeffectsNever: true,
+              }),
+            ],
+          },
+        },
+      },
+      {
+        init: {
+          name: "New Moon",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateConsumption: false,
+          generateTarget: false,
+          generateRange: false,
+          generateActivation: true,
+          activationOverride: {
+            type: "special",
+            value: 1,
+            condition: "",
+          },
+        },
+      },
+      {
+        init: {
+          name: "Crescent Moon",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateConsumption: false,
+          generateTarget: false,
+          generateRange: false,
+          generateActivation: true,
+          activationOverride: {
+            type: "special",
+            value: 1,
+            condition: "",
+          },
+        },
+      },
+    ];
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    const effects: IDDBEffectHint[] = [
+      {
+        name: "Full Moon Aura",
+        standalone: true,
+        auraeffectsNever: true,
+        changes: [
+          DDBEnricherData.ChangeHelper.advantageSkillChange("inv"),
+          DDBEnricherData.ChangeHelper.advantageSkillChange("per"),
+        ],
+      },
+      {
+        name: "Full Moon Aura",
+        activitiesMatch: ["Full Moon"],
+        auraeffectsOnly: true,
+        changes: [
+          DDBEnricherData.ChangeHelper.advantageSkillChange("inv"),
+          DDBEnricherData.ChangeHelper.advantageSkillChange("per"),
+        ],
+        daeStackable: "noneNameOnly",
+        auraeffects: {
+          applyToSelf: true,
+          bestFormula: "",
+          canStack: false,
+          collisionTypes: ["move"],
+          combatOnly: false,
+          disableOnHidden: true,
+          distanceFormula: `10`,
+          disposition: 1,
+          evaluatePreApply: true,
+          overrideName: "",
+          script: "",
+        },
+      },
+      {
+        name: "New Moon",
+        activityMatch: "New Moon",
+        changes: [
+          DDBEnricherData.ChangeHelper.advantageSkillChange("ste"),
+        ],
+      },
+      {
+        name: "Crescent Moon",
+        activityMatch: "Crescent Moon",
+        changes: [
+          DDBEnricherData.ChangeHelper.damageResistanceChange("necrotic"),
+        ],
+      },
+    ];
+
+    effects.push({
+      name: "Full Moon: Shed Light",
+      activityMatch: "Full Moon: Shed Light",
+      changes: [
+        DDBEnricherData.ChangeHelper.upgradeChange("10", 20, "token.light.bright"),
+        DDBEnricherData.ChangeHelper.upgradeChange("20", 20, "token.light.dim"),
+        DDBEnricherData.ChangeHelper.overrideChange("#ffffff", 20, "token.light.color"),
+        DDBEnricherData.ChangeHelper.overrideChange("0.25", 20, "token.light.alpha"),
+      ],
+    } as IDDBEffectHint);
+
+    return effects;
+  }
+
+}

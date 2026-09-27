@@ -1,0 +1,153 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class DelayedBlastFireball extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.UTILITY;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Create Bead",
+      addItemConsume: true,
+      itemConsumeValue: "@item.uses.value",
+      targetType: "space",
+      data: {
+        img: "systems/dnd5e/icons/svg/damage/force.svg",
+        target: {
+          override: true,
+          template: {
+            contiguous: false,
+            type: "sphere",
+            size: "1",
+            units: "ft",
+          },
+        },
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Touch Bead",
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateSave: true,
+          generateActivation: true,
+          generateDuration: true,
+          noSpellslot: true,
+          durationOverride: {
+            units: "inst",
+            concentration: false,
+          },
+          activationOverride: {
+            type: "special",
+          },
+        },
+        overrides: {
+          targetType: "creature",
+          noTemplate: true,
+          overrideTarget: true,
+          data: {
+            img: "systems/dnd5e/icons/svg/trait-skills.svg",
+            range: {
+              override: true,
+              units: "any",
+            },
+            save: {
+              ability: ["dex"],
+              dc: {
+                calculation: "spellcasting",
+                formula: "",
+              },
+            },
+          },
+        },
+      },
+      {
+        init: {
+          name: "Increase Turn Counter",
+          type: DDBEnricherData.ACTIVITY_TYPES.UTILITY,
+        },
+        build: {
+          generateDuration: true,
+          generateActivation: true,
+          noSpellslot: true,
+          durationOverride: {
+            units: "inst",
+            concentration: false,
+          },
+          activationOverride: {
+            type: "special",
+          },
+        },
+        overrides: {
+          addItemConsume: true,
+          itemConsumeValue: "-1",
+          targetType: "",
+          noTemplate: true,
+          overrideTarget: true,
+          data: {
+            img: "systems/dnd5e/icons/svg/scale-value.svg",
+            duration: {
+              override: true,
+              units: "inst",
+            },
+          },
+        },
+      },
+      {
+        init: {
+          name: "Explosion",
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateDamage: true,
+          generateSave: true,
+          generateActivation: true,
+          generateDuration: true,
+          noSpellslot: true,
+          durationOverride: {
+            units: "inst",
+            concentration: false,
+          },
+          activationOverride: {
+            type: "special",
+          },
+        },
+        overrides: {
+          data: {
+            img: "icons/magic/fire/projectile-fireball-smoke-strong-orange.webp",
+            damage: {
+              parts: [
+                DDBEnricherData.basicDamagePart({
+                  number: 12,
+                  denomination: 6,
+                  bonus: "(@item.uses.value)d6",
+                  types: ["fire"],
+                }),
+              ],
+            },
+          },
+        },
+      },
+    ];
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      descriptionSuffix: `
+<section class="secret ddbSecret" id="secret-ddbFormOfTheBeast">
+<p><strong>Implementation Details</strong></p>
+    <p>The uses value of this spell tracks the rounds that have passed since the casting.</p>
+    <p>The <strong>Increase Turn Counter</strong> activity will increase that value by 1.</p>
+    <p>The <strong>Explosion</strong> activity calculates the total damage based on the  uses.</p>
+</section>`,
+      uses: { spent: null, max: "10" },
+    };
+  }
+
+}

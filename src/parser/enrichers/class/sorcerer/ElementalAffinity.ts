@@ -1,0 +1,107 @@
+import { utils } from "../../../../lib/_module";
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class ElementalAffinity extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.DAMAGE;
+  }
+
+  get damageTypes(): string[] {
+    return [
+      "acid",
+      "cold",
+      "fire",
+      "lightning",
+      "poison",
+    ];
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Damage bonus",
+      type: DDBEnricherData.ACTIVITY_TYPES.DAMAGE,
+      noeffect: true,
+      activationType: "special",
+      activationCondition: "1/turn. Damage someone with a spell of the same damage type.", // Manual fallback: the chosen resistance effect already adds the bonus.",
+      damageParts: [
+        DDBEnricherData.basicDamagePart({
+          bonus: "@abilities.cha.mod",
+          types: this.damageTypes,
+        }),
+      ],
+    };
+  }
+
+  get chosenDamageType(): string {
+    if (this.ddbParser.isMuncher) return "";
+    const activeType = this.ddbParser._chosen?.find((a) =>
+      utils.nameString(a.label).endsWith("Damage"),
+    )?.label?.split(" Damage")[0].toLowerCase();
+
+    if (activeType) return activeType;
+
+    const featureType = this.name.match(/\(([^)]+)\)/);
+    if (featureType && featureType.length > 1) {
+      return featureType[1].toLowerCase();
+    }
+    return "";
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    const activeType = this.chosenDamageType ?? "";
+
+    const resistanceEffects: IDDBEffectHint[] = this.damageTypes.map((type) => {
+      return {
+        name: `Elemental Affinity, Resistance: ${utils.capitalize(type)}`,
+        options: {
+          transfer: activeType.includes(type),
+          disabled: !activeType.includes(type),
+        },
+        changes: [
+          DDBEnricherData.ChangeHelper.damageResistanceChange(type),
+        ],
+      };
+    });
+    const damageBonusEffects: IDDBEffectHint[] = this.damageTypes.map((type) => {
+      return {
+        name: `Elemental Affinity, Damage Bonus: ${utils.capitalize(type)}`,
+        options: {
+          transfer: activeType.includes(type),
+          disabled: true,
+        },
+        changes: [
+          DDBEnricherData.ChangeHelper.damageResistanceChange(type),
+          // "add your Charisma modifier to one damage roll of that type" - the rule engine applies
+          // it once per spell damage roll of the affinity type; the once-per-turn cap is not enforced
+          DDBEnricherData.ChangeHelper.ruleBonusChange("damage", "@abilities.cha.mod", {
+            conditions: [
+              DDBEnricherData.ChangeHelper.SPELL_FILTER,
+              { k: "roll.damage.type", o: "exact", v: type },
+            ],
+          }),
+        ],
+      };
+    });
+    return resistanceEffects.concat(damageBonusEffects);
+  }
+
+  override get clearAutoEffects(): boolean {
+    return true;
+  }
+
+  override get override(): IDDBOverrideData {
+    const activeType = this.chosenDamageType;
+    const flags = {
+      ddbimporter: {
+        originalName: "Elemental Affinity",
+      },
+    };
+    const result = activeType !== ""
+      ? { data: { name: `Elemental Affinity (${utils.capitalize(activeType)})`, flags } }
+      : { data: { name: "Elemental Affinity", flags } };
+
+    return result;
+  }
+
+}

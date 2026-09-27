@@ -1,0 +1,62 @@
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class CauterizingFlames extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.HEAL;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Bonus Healing",
+      activationType: "reaction",
+      data: {
+        healing: DDBEnricherData.basicDamagePart({
+          number: 2,
+          denomination: 10,
+          bonus: "@abilities.wis.mod",
+          types: ["healing"],
+        }),
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Bonus Damage",
+          type: DDBEnricherData.ACTIVITY_TYPES.DAMAGE,
+        },
+        build: {
+          generateConsumption: false,
+          generateTarget: true,
+          generateRange: false,
+          generateActivation: true,
+          generateDamage: true,
+          activationOverride: {
+            type: "reaction",
+            value: 1,
+            condition: "",
+          },
+        },
+        overrides: {
+          data: {
+            damage: {
+              parts: [
+                DDBEnricherData.basicDamagePart({
+                  number: 2,
+                  denomination: 10,
+                  bonus: "@abilities.wis.mod",
+                  types: ["fire"],
+                }),
+              ],
+            },
+          },
+        },
+      },
+    ];
+  }
+
+}
+

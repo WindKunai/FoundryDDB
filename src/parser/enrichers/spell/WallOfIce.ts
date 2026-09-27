@@ -1,0 +1,100 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class WallOfIce extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.SAVE;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Place Panels",
+      splitDamage: true,
+      data: {
+        // approximation: the frigid air sheet exists only where a panel is breached;
+        // the region covers the whole wall, so the GM ignores saves at intact panels
+        behaviors: [
+          DDBEnricherData.BehaviorHelper.activity({
+            events: ["tokenEnter"],
+            activityName: "Frigid Air Save",
+          }),
+        ],
+        img: "icons/magic/water/barrier-ice-wall-snow.webp",
+        target: {
+          override: true,
+          template: {
+            count: "10",
+            contiguous: true,
+            type: "wall",
+            size: "10",
+            width: "1",
+            height: "10",
+            units: "ft",
+          },
+        },
+      },
+    };
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Create Dome/Globe",
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateDamage: true,
+          generateConsumption: true,
+          generateSave: true,
+          generateTarget: true,
+          img: "icons/magic/water/barrier-ice-shield.webp",
+          partialDamageParts: [0],
+          targetOverride: {
+            override: true,
+            template: {
+              count: "1",
+              contiguous: false,
+              type: "sphere",
+              size: "10",
+              units: "ft",
+            },
+            affects: {},
+          },
+        },
+      },
+      {
+        init: {
+          name: "Frigid Air Save",
+          type: DDBEnricherData.ACTIVITY_TYPES.SAVE,
+        },
+        build: {
+          generateDamage: true,
+          generateConsumption: false,
+          generateSave: true,
+          saveOverride: { ability: ["con"], dc: { calculation: "spellcasting", formula: "" } },
+          img: "icons/magic/water/snowflake-ice-blue-white.webp",
+          generateTarget: true,
+          partialDamageParts: [1],
+          noSpellslot: true,
+          activationOverride: { type: "special", condition: "Moving through/starting in Frigid Air" },
+          durationOverride: { units: "inst", concentration: false },
+          targetOverride: {
+            override: true,
+            affects: {
+              type: "creature",
+            },
+            template: {},
+          },
+        },
+      },
+    ];
+  }
+
+  override get override(): IDDBOverrideData {
+    return {
+      noTemplate: true,
+    };
+  }
+
+}

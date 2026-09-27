@@ -1,0 +1,42 @@
+import DDBEnricherData from "../data/DDBEnricherData";
+
+export default class PotionOfHealing extends DDBEnricherData {
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.HEAL;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      addItemConsume: true,
+      activationType: this.is2014 ? "action" : "bonus",
+      targetType: "creature",
+      data: {
+        range: {
+          units: "touch",
+        },
+      },
+    };
+  }
+
+
+  override get override(): IDDBOverrideData {
+    if ((foundry.utils.getProperty(this.ddbParser.ddbDefinition, "sources") as IDDBSource[] | undefined)?.some((s) => s.sourceId === 1)) {
+      return {
+        data: {
+          "flags.ddbimporter": {
+            is2014: true,
+            is2024: false,
+          },
+          system: {
+            source: {
+              rules: "2014",
+            },
+          },
+        },
+      };
+    }
+    return {};
+  }
+
+}

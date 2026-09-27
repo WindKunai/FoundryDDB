@@ -1,0 +1,250 @@
+import { utils } from "../../../../lib/_module";
+import DDBEnricherData from "../../data/DDBEnricherData";
+
+export default class Shifting extends DDBEnricherData {
+
+  get shifterType(): string {
+    if (!this.ddbParser._chosen || this.ddbParser._chosen.length === 0) {
+      return this.ddbParser.ddbCharacter?._ddbRace.fullName ?? "";
+    }
+
+    return this.ddbParser._chosen[0].label;
+  }
+
+  override get type(): IDDBActivityType | null {
+    return DDBEnricherData.ACTIVITY_TYPES.ENCHANT;
+  }
+
+  override get activity(): IDDBActivityData {
+    return {
+      name: "Shifter Choice",
+      targetType: "self",
+      rangeSelf: true,
+      activationType: "special",
+      id: utils.namedIDStub("shifterChoice", { prefix: "shift", postfix: "core" }),
+      data: {
+        enchant: {
+          self: true,
+        },
+        duration: { value: "", units: "perm" },
+      },
+    };
+  }
+
+  get shiftActivities(): IDDBAdditionalActivity[] {
+    const results: IDDBAdditionalActivity[] = [];
+    for (const shifterType of ["Beasthide", "Longtooth", "Swiftstride", "Wildhunt"]) {
+      results.push({
+        init: {
+          name: `Shift ${shifterType}`,
+          type: DDBEnricherData.ACTIVITY_TYPES.HEAL,
+        },
+        build: {
+          // was generateHeal, which nothing reads
+          generateHealing: true,
+          generateConsumption: false,
+          generateTarget: true,
+        },
+        overrides: {
+          id: utils.namedIDStub(shifterType, { prefix: "shift", postfix: "ac" }),
+          targetType: "self",
+          activationType: "bonus",
+          data: {
+            healing: DDBEnricherData.basicDamagePart({
+              customFormula: this.ddbParser.ddbCharacter?._ddbRace.isLegacy
+                ? "max(1, @abilities.con.mod) + @detail.level"
+                : shifterType === "Beasthide"
+                  ? "(2 * @prof) + 1d6"
+                  : "2 * @prof",
+              types: ["temphp"],
+            }),
+          },
+        },
+      });
+    }
+    return results;
+  }
+
+  get additionalActivitiesLongtooth(): IDDBAdditionalActivity[] {
+    return [
+      {
+        init: {
+          name: "Longtooth Attack",
+          type: DDBEnricherData.ACTIVITY_TYPES.ATTACK,
+        },
+        build: {
+          generateAttack: true,
+          generateConsumption: false,
+          generateTarget: true,
+          generateDamage: true,
+          attackOverride: {
+            ability: "str",
+            type: {
+              value: "melee",
+              classification: "weapon",
+            },
+          },
+          damageParts: [
+            DDBEnricherData.basicDamagePart({
+              number: 1,
+              denomination: 6,
+              type: "piercing",
+            }),
+          ],
+          activationOverride: {
+            type: "bonus",
+            value: 1,
+          },
+        },
+        overrides: {
+          id: "ddblongtoothatta",
+        },
+      },
+    ];
+  }
+
+  get additionalActivitiesSwiftstride(): IDDBAdditionalActivity[] {
+    return [
+      {
+        action: {
+          name: "Swiftstride",
+          type: "race",
+          rename: ["Swiftstride Move Reaction"],
+        },
+        overrides: {
+          id: "ddbswiftstridemo",
+          noeffect: true,
+        },
+      },
+    ];
+  }
+
+  override get additionalActivities(): IDDBAdditionalActivity[] {
+    const results = [
+      ...this.shiftActivities,
+      ...this.additionalActivitiesLongtooth,
+      ...this.additionalActivitiesSwiftstride,
+    ];
+
+    results.push();
+
+    return results;
+  }
+
+  get enchantEffects(): IDDBEffectHint[] {
+    const results: IDDBEffectHint[] = [];
+
+    for (const shifterType of ["Beasthide", "Longtooth", "Swiftstride", "Wildhunt"]) {
+      const activityRiders = [utils.namedIDStub(shifterType, { prefix: "shift", postfix: "ac" })];
+      const effect: IDDBEffectHint = {
+        name: `Type: ${shifterType}`,
+        type: "enchant",
+        changes: [
+          DDBEnricherData.ChangeHelper.overrideChange(`Chosen: ${shifterType}`, 20, "activities[enchant].name"),
+          DDBEnricherData.ChangeHelper.overrideChange("spec", 1, "activities[enchant].activation.type"),
+          DDBEnricherData.ChangeHelper.overrideChange("End", 1, "activities[enchant].activation.condition"),
+          DDBEnricherData.ChangeHelper.overrideChange("[]", 1, "activities[enchant].consumption.targets"),
+        ],
+        activityMatch: "Shifter Choice",
+        data: {
+          _id: utils.namedIDStub(shifterType, { prefix: "choice", postfix: "ef" }),
+          duration: {
+            value: null,
+            units: undefined,
+            expiry: null,
+          },
+          flags: {
+            ddbimporter: {
+              activityRiders,
+              effectRiders: [utils.namedIDStub(shifterType, { postfix: "ef" })],
+            },
+          },
+        },
+      };
+      if (shifterType === "Longtooth") {
+        activityRiders.push("ddblongtoothatta");
+      } else if (shifterType === "Swiftstride") {
+        activityRiders.push("ddbswiftstridemo");
+      }
+      results.push(effect);
+    }
+    return results;
+  }
+
+  override get effects(): IDDBEffectHint[] {
+    const results = [
+      ...this.enchantEffects,
+    ];
+
+    for (const shifterType of ["Beasthide", "Longtooth", "Swiftstride", "Wildhunt"]) {
+      const changes = [];
+      if (shifterType === "Beasthide") {
+        changes.push(
+          DDBEnricherData.ChangeHelper.unsignedAddChange("1", 20, "system.attributes.ac.bonus"),
+        );
+      } else if (shifterType === "Swiftstride") {
+        changes.push(
+          DDBEnricherData.ChangeHelper.unsignedAddChange("10", 20, "system.attributes.movement.speeds.walk"),
+        );
+      } else if (shifterType === "Wildhunt") {
+        changes.push(
+          DDBEnricherData.ChangeHelper.advantageAbilityCheckChange("wis"),
+        );
+      }
+      results.push(
+        {
+          name: `Shifted: ${shifterType}`,
+          options: {
+            durationSeconds: 60,
+            transfer: true,
+          },
+          activityMatch: `Shift ${shifterType}`,
+          changes,
+          data: {
+            _id: utils.namedIDStub(shifterType, { postfix: "ef" }),
+            flags: {
+              dae: {
+                selfTarget: true,
+                selfTargetAlways: true,
+              },
+            },
+          },
+        },
+      );
+    }
+    return results;
+  }
+
+  override get override(): IDDBOverrideData {
+    const uses = this.ddbParser.ddbCharacter?._ddbRace.isLegacy
+      ? {}
+      : this._getUsesWithSpent({
+        type: "race",
+        name: "Shift",
+        max: "@prof",
+      });
+
+    const shifterType = this.shifterType;
+
+    const flags = this.ddbParser.isMuncher || !shifterType
+      ? {}
+      : {
+        transferEnchantment: {
+          targetItemId: "self",
+          effectId: utils.namedIDStub(shifterType, { prefix: "choice", postfix: "ef" }),
+          activityId: utils.namedIDStub("shifterChoice", { prefix: "shift", postfix: "core" }),
+        },
+      };
+
+    return {
+      uses,
+      data: {
+        "name": "Shifting",
+        flags: {
+          ddbimporter: flags,
+        },
+      },
+    };
+  }
+
+}
